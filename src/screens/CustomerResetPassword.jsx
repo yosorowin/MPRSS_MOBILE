@@ -1,8 +1,13 @@
-import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import {
+  confirmPasswordReset,
+  verifyPasswordResetCode,
+} from "firebase/auth";
 import { useEffect, useState } from "react";
 import {
-  Image,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,677 +15,382 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { auth } from "../firebase";
 
 export default function CustomerResetPassword() {
   const router = useRouter();
+  const params = useLocalSearchParams();
+
+  const [oobCode, setOobCode] = useState("");
+  const [email, setEmail] = useState("");
 
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [errors, setErrors] = useState({});
-  const [showNew, setShowNew] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [email, setEmail] = useState("");
+
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    const resetData = globalThis.passwordResetData;
+    const code = Array.isArray(params.oobCode)
+      ? params.oobCode[0]
+      : params.oobCode;
 
-    if (!resetData) {
-      router.replace("/forgot-password");
+    if (!code) {
+      setError("This password reset link is invalid or incomplete.");
+      setLoading(false);
       return;
     }
 
-    if (
-      Date.now() - resetData.timestamp >
-      resetData.expiresIn
-    ) {
-      globalThis.passwordResetData = null;
-      router.replace("/forgot-password");
-      return;
-    }
+    setOobCode(code);
 
-    setEmail(resetData.email || "");
-  }, [router]);
+    const verifyCode = async () => {
+      try {
+        const verifiedEmail = await verifyPasswordResetCode(auth, code);
 
-  const requirements = [
-    {
-      label: "At least 6 characters",
-      met: newPassword.length >= 6,
-    },
-    {
-      label: "Contains a letter",
-      met: /[a-zA-Z]/.test(newPassword),
-    },
-    {
-      label: "Passwords match",
-      met:
-        newPassword.length > 0 &&
-        newPassword === confirmPassword,
-    },
-  ];
+        setEmail(verifiedEmail);
+        setLoading(false);
+      } catch (error) {
+        console.error("Reset code verification error:", error);
 
-  const validate = () => {
-    const next = {};
+        if (
+          error.code === "auth/expired-action-code" ||
+          error.code === "auth/invalid-action-code"
+        ) {
+          setError(
+            "This password reset link is invalid or has expired. Please request a new one."
+          );
+        } else {
+          setError(
+            "We couldn't verify this reset link. Please request a new password reset email."
+          );
+        }
 
-    if (!newPassword) {
-      next.newPassword = "New password is required";
-    } else if (newPassword.length < 6) {
-      next.newPassword = "At least 6 characters";
-    }
-
-    if (!confirmPassword) {
-      next.confirmPassword =
-        "Please confirm your password";
-    } else if (newPassword !== confirmPassword) {
-      next.confirmPassword =
-        "Passwords do not match";
-    }
-
-    setErrors(next);
-
-    return Object.keys(next).length === 0;
-  };
-
-  const handleSubmit = () => {
-    if (!validate()) return;
-
-    const resetData = globalThis.passwordResetData;
-
-    if (!resetData) {
-      setErrors({
-        newPassword:
-          "Session expired. Please try again.",
-      });
-      return;
-    }
-
-    if (
-      Date.now() - resetData.timestamp >
-      resetData.expiresIn
-    ) {
-      globalThis.passwordResetData = null;
-
-      setErrors({
-        newPassword:
-          "Session expired. Please try again.",
-      });
-
-      return;
-    }
-
-    globalThis.customerResetPassword = {
-      email: resetData.email,
-      password: newPassword,
+        setLoading(false);
+      }
     };
 
-    globalThis.passwordResetData = null;
+    verifyCode();
+  }, [params.oobCode]);
 
-    setSuccess(true);
+  const handleResetPassword = async () => {
+    setError("");
 
-    setTimeout(() => {
-      router.replace("/login");
-    }, 2500);
+    if (!newPassword) {
+      setError("Please enter a new password.");
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      setError("Your password must be at least 6 characters long.");
+      return;
+    }
+
+    if (!/[A-Za-z]/.test(newPassword)) {
+      setError("Your password must contain at least one letter.");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    if (!oobCode) {
+      setError("Invalid password reset request.");
+      return;
+    }
+
+    try {
+      setSaving(true);
+
+      await confirmPasswordReset(auth, oobCode, newPassword);
+
+      setSuccess(true);
+    } catch (error) {
+      console.error("Password update error:", error);
+
+      if (error.code === "auth/expired-action-code") {
+        setError(
+          "This reset link has expired. Please request a new password reset email."
+        );
+      } else if (error.code === "auth/invalid-action-code") {
+        setError(
+          "This reset link is no longer valid. Please request a new one."
+        );
+      } else if (error.code === "auth/weak-password") {
+        setError("This password is too weak. Please choose a stronger one.");
+      } else {
+        setError("Unable to change your password. Please try again.");
+      }
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#111" />
+
+        <Text style={styles.loadingText}>
+          Verifying your password reset link...
+        </Text>
+      </View>
+    );
+  }
 
   if (success) {
     return (
-      <LinearGradient
-        colors={["#F5F5F2", "#E7E7E2", "#B8B8B3", "#7A7A76"]}
-        locations={[0, 0.35, 0.78, 1]}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 1 }}
-        style={styles.container}
-      >
-        <View style={styles.successContainer}>
-          <View style={styles.successCard}>
-
-            {/* Logo */}
-            <View style={styles.logoContainer}>
-              <Image
-                source={require("../../assets/logo.png")}
-                style={styles.logo}
-                resizeMode="contain"
-              />
-            </View>
-
-            {/* Success Icon */}
-            <View style={styles.successIcon}>
-              <Text style={styles.successIconText}>
-                ✓
-              </Text>
-            </View>
-
-            <Text style={styles.successTitle}>
-              Password Updated
-            </Text>
-
-            <Text style={styles.successDescription}>
-              Your password has been successfully reset.
-              Redirecting to Sign In...
-            </Text>
-
-            <View style={styles.redirectContainer}>
-              <View style={styles.redirectDot} />
-
-              <Text style={styles.redirectText}>
-                Redirecting...
-              </Text>
-            </View>
-          </View>
+      <View style={styles.successContainer}>
+        <View style={styles.successIcon}>
+          <Text style={styles.successIconText}>✓</Text>
         </View>
-      </LinearGradient>
+
+        <Text style={styles.title}>Password Changed</Text>
+
+        <Text style={styles.description}>
+          Your password has been successfully updated.
+        </Text>
+
+        <Text style={styles.description}>
+          You can now log in to your MPRSS account using your new password.
+        </Text>
+
+        <TouchableOpacity
+          style={styles.button}
+          onPress={() => router.replace("/login")}
+        >
+          <Text style={styles.buttonText}>Go to Login</Text>
+        </TouchableOpacity>
+      </View>
     );
   }
 
   return (
-    <LinearGradient
-      colors={["#F5F5F2", "#E7E7E2", "#B8B8B3", "#7A7A76"]}
-      locations={[0, 0.35, 0.78, 1]}
-      start={{ x: 0.5, y: 0 }}
-      end={{ x: 0.5, y: 1 }}
+    <KeyboardAvoidingView
       style={styles.container}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <ScrollView
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
       >
-        <View style={styles.card}>
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={() => router.replace("/login")}
+        >
+          <Text style={styles.backText}>‹ Back to Login</Text>
+        </TouchableOpacity>
 
-          {/* Logo */}
-          <View style={styles.logoContainer}>
-            <Image
-              source={require("../../assets/logo.png")}
-              style={styles.logo}
-              resizeMode="contain"
-            />
-          </View>
+        <Text style={styles.title}>Reset Password</Text>
 
-          {/* Heading */}
-          <View style={styles.headingContainer}>
-            <Text
-              style={styles.heading}
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.75}
-            >
-              Create New Password
-            </Text>
+        {email ? (
+          <Text style={styles.emailText}>
+            Resetting password for{" "}
+            <Text style={styles.emailBold}>{email}</Text>
+          </Text>
+        ) : null}
 
-            {email !== "" && (
-              <Text style={styles.emailText}>
-                Resetting for{" "}
-                <Text style={styles.emailValue}>
-                  {email}
-                </Text>
-              </Text>
-            )}
-          </View>
+        <Text style={styles.description}>
+          Create a new password for your MPRSS account.
+        </Text>
 
-          {/* New Password */}
-          <View style={styles.field}>
-            <Text style={styles.label}>
-              NEW PASSWORD
-            </Text>
+        <View style={styles.form}>
+          <Text style={styles.label}>New Password</Text>
 
-            <View
-              style={[
-                styles.passwordWrapper,
-                errors.newPassword &&
-                  styles.passwordWrapperError,
-              ]}
-            >
-              <TextInput
-                value={newPassword}
-                onChangeText={(value) => {
-                  setNewPassword(value);
+          <TextInput
+            style={styles.input}
+            value={newPassword}
+            onChangeText={(text) => {
+              setNewPassword(text);
+              setError("");
+            }}
+            placeholder="Enter new password"
+            placeholderTextColor="#999"
+            secureTextEntry
+            editable={!saving}
+          />
 
-                  if (errors.newPassword) {
-                    setErrors((previous) => {
-                      const next = { ...previous };
-                      delete next.newPassword;
-                      return next;
-                    });
-                  }
-                }}
-                style={styles.passwordInput}
-                placeholder="Enter new password"
-                placeholderTextColor="#d1d5db"
-                secureTextEntry={!showNew}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
+          <Text style={styles.requirement}>
+            At least 6 characters and one letter
+          </Text>
 
-              <TouchableOpacity
-                style={styles.eyeButton}
-                onPress={() =>
-                  setShowNew((previous) => !previous)
-                }
-                activeOpacity={0.7}
-              >
-                <Text style={styles.eyeText}>
-                  {showNew ? "◉" : "○"}
-                </Text>
-              </TouchableOpacity>
-            </View>
+          <Text style={styles.label}>Confirm New Password</Text>
 
-            {errors.newPassword && (
-              <Text style={styles.errorText}>
-                {errors.newPassword}
-              </Text>
-            )}
-          </View>
+          <TextInput
+            style={styles.input}
+            value={confirmPassword}
+            onChangeText={(text) => {
+              setConfirmPassword(text);
+              setError("");
+            }}
+            placeholder="Confirm new password"
+            placeholderTextColor="#999"
+            secureTextEntry
+            editable={!saving}
+          />
 
-          {/* Confirm Password */}
-          <View style={styles.field}>
-            <Text style={styles.label}>
-              CONFIRM NEW PASSWORD
-            </Text>
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-            <View
-              style={[
-                styles.passwordWrapper,
-                errors.confirmPassword &&
-                  styles.passwordWrapperError,
-              ]}
-            >
-              <TextInput
-                value={confirmPassword}
-                onChangeText={(value) => {
-                  setConfirmPassword(value);
-
-                  if (errors.confirmPassword) {
-                    setErrors((previous) => {
-                      const next = { ...previous };
-                      delete next.confirmPassword;
-                      return next;
-                    });
-                  }
-                }}
-                style={styles.passwordInput}
-                placeholder="Re-enter new password"
-                placeholderTextColor="#d1d5db"
-                secureTextEntry={!showConfirm}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-
-              <TouchableOpacity
-                style={styles.eyeButton}
-                onPress={() =>
-                  setShowConfirm(
-                    (previous) => !previous
-                  )
-                }
-                activeOpacity={0.7}
-              >
-                <Text style={styles.eyeText}>
-                  {showConfirm ? "◉" : "○"}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {errors.confirmPassword && (
-              <Text style={styles.errorText}>
-                {errors.confirmPassword}
-              </Text>
-            )}
-          </View>
-
-          {/* Password Requirements */}
-          {newPassword.length > 0 && (
-            <View style={styles.requirementsBox}>
-              {requirements.map(({ label, met }, index) => (
-                <View
-                  key={label}
-                  style={[
-                    styles.requirementRow,
-                    index === requirements.length - 1 &&
-                      styles.requirementRowLast,
-                  ]}
-                >
-                  <View
-                    style={[
-                      styles.requirementDot,
-                      met
-                        ? styles.requirementMet
-                        : styles.requirementUnmet,
-                    ]}
-                  >
-                    {met && (
-                      <View
-                        style={styles.requirementInner}
-                      />
-                    )}
-                  </View>
-
-                  <Text
-                    style={[
-                      styles.requirementText,
-                      met &&
-                        styles.requirementTextMet,
-                    ]}
-                  >
-                    {label}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          )}
-
-          {/* Reset Password */}
           <TouchableOpacity
-            style={styles.resetButton}
-            onPress={handleSubmit}
-            activeOpacity={0.9}
+            style={[styles.button, saving && styles.buttonDisabled]}
+            onPress={handleResetPassword}
+            disabled={saving}
           >
-            <Text style={styles.resetButtonText}>
-              Reset Password
+            <Text style={styles.buttonText}>
+              {saving ? "Changing Password..." : "Change Password"}
             </Text>
           </TouchableOpacity>
-
-          {/* Back to Sign In */}
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => router.replace("/login")}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.backArrow}>
-              ‹
-            </Text>
-
-            <Text style={styles.backText}>
-              Back to Sign In
-            </Text>
-          </TouchableOpacity>
-
         </View>
       </ScrollView>
-    </LinearGradient>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: "#fff",
   },
 
   content: {
     flexGrow: 1,
-    justifyContent: "center",
-    padding: 16,
-    paddingVertical: 40,
+    paddingHorizontal: 24,
+    paddingTop: 55,
+    paddingBottom: 40,
   },
 
-  card: {
-    width: "100%",
-    maxWidth: 384,
-    alignSelf: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#E5E5E0",
-    paddingHorizontal: 32,
-    paddingVertical: 40,
-    shadowColor: "#000000",
-    shadowOffset: {
-      width: 0,
-      height: 6,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    elevation: 4,
-  },
-
-  logoContainer: {
-    alignItems: "center",
-    marginBottom: 32,
-  },
-
-  logo: {
-    width: 120,
-    height: 42,
-  },
-
-  headingContainer: {
-    marginBottom: 28,
-  },
-
-  heading: {
-    fontSize: 32,
-    lineHeight: 36,
-    fontWeight: "900",
-    color: "#0A0F1A",
-    marginBottom: 6,
-    textAlign: "center",
-  },
-
-  emailText: {
-    fontSize: 12,
-    color: "#9CA3AF",
-    marginTop: 4,
-    textAlign: "center",
-  },
-
-  emailValue: {
-    color: "#4B5563",
-    fontWeight: "500",
-  },
-
-  field: {
-    marginBottom: 16,
-  },
-
-  label: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#6B7280",
-    letterSpacing: 1.2,
-    marginBottom: 6,
-  },
-
-  passwordWrapper: {
-    height: 50,
-    borderWidth: 2,
-    borderColor: "#E5E7EB",
-    borderRadius: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-  },
-
-  passwordWrapperError: {
-    borderColor: "#FCA5A5",
-  },
-
-  passwordInput: {
+  loadingContainer: {
     flex: 1,
-    height: "100%",
-    paddingHorizontal: 16,
-    paddingRight: 8,
-    fontSize: 14,
-    color: "#111827",
-  },
-
-  eyeButton: {
-    height: "100%",
-    paddingHorizontal: 14,
-    justifyContent: "center",
-  },
-
-  eyeText: {
-    color: "#9CA3AF",
-    fontSize: 16,
-  },
-
-  errorText: {
-    color: "#EF4444",
-    fontSize: 12,
-    marginTop: 4,
-  },
-
-  requirementsBox: {
-    backgroundColor: "#F8F8F5",
-    borderWidth: 1,
-    borderColor: "#E5E5E0",
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 16,
-  },
-
-  requirementRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 6,
-  },
-
-  requirementRowLast: {
-    marginBottom: 0,
-  },
-
-  requirementDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    backgroundColor: "#fff",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 8,
+    paddingHorizontal: 30,
   },
 
-  requirementMet: {
-    backgroundColor: "#22C55E",
-  },
-
-  requirementUnmet: {
-    backgroundColor: "#E5E7EB",
-  },
-
-  requirementInner: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#FFFFFF",
-  },
-
-  requirementText: {
-    fontSize: 12,
-    color: "#9CA3AF",
-  },
-
-  requirementTextMet: {
-    color: "#16A34A",
-  },
-
-  resetButton: {
-    width: "100%",
-    height: 54,
-    backgroundColor: "#0A0F1A",
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  resetButtonText: {
-    color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-
-  backButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 24,
-  },
-
-  backArrow: {
-    color: "#6B7280",
-    fontSize: 22,
-    lineHeight: 18,
-    marginRight: 5,
-  },
-
-  backText: {
-    color: "#6B7280",
-    fontSize: 14,
+  loadingText: {
+    marginTop: 18,
+    fontSize: 15,
+    color: "#666",
+    textAlign: "center",
   },
 
   successContainer: {
     flex: 1,
+    backgroundColor: "#fff",
+    alignItems: "center",
     justifyContent: "center",
-    padding: 16,
+    paddingHorizontal: 24,
   },
 
-  successCard: {
+  backButton: {
+    marginBottom: 40,
+  },
+
+  backText: {
+    fontSize: 16,
+    color: "#222",
+    fontWeight: "500",
+  },
+
+  title: {
+    fontSize: 30,
+    fontWeight: "700",
+    color: "#111",
+    marginBottom: 14,
+  },
+
+  description: {
+    fontSize: 15,
+    lineHeight: 23,
+    color: "#666",
+    marginBottom: 12,
+  },
+
+  emailText: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: "#666",
+    marginBottom: 12,
+  },
+
+  emailBold: {
+    color: "#111",
+    fontWeight: "600",
+  },
+
+  form: {
+    marginTop: 25,
+  },
+
+  label: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#222",
+    marginBottom: 8,
+    marginTop: 12,
+  },
+
+  input: {
     width: "100%",
-    maxWidth: 384,
-    alignSelf: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    height: 52,
     borderWidth: 1,
-    borderColor: "#E5E5E0",
-    paddingHorizontal: 32,
-    paddingVertical: 48,
+    borderColor: "#ddd",
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    fontSize: 15,
+    color: "#222",
+  },
+
+  requirement: {
+    fontSize: 12,
+    color: "#888",
+    marginTop: 7,
+  },
+
+  errorText: {
+    color: "#d93025",
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 12,
+  },
+
+  button: {
+    width: "100%",
+    height: 52,
+    backgroundColor: "#111",
+    borderRadius: 10,
     alignItems: "center",
-    shadowColor: "#000000",
-    shadowOffset: {
-      width: 0,
-      height: 6,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    elevation: 4,
+    justifyContent: "center",
+    marginTop: 22,
+  },
+
+  buttonDisabled: {
+    opacity: 0.6,
+  },
+
+  buttonText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "600",
   },
 
   successIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#F0FDF4",
-    borderWidth: 2,
-    borderColor: "#BBF7D0",
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "#111",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 24,
+    marginBottom: 25,
   },
 
   successIconText: {
-    fontSize: 30,
-    fontWeight: "700",
-    color: "#22C55E",
-  },
-
-  successTitle: {
-    fontSize: 30,
-    fontWeight: "900",
-    color: "#0A0F1A",
-    marginBottom: 10,
-    textAlign: "center",
-  },
-
-  successDescription: {
-    fontSize: 14,
-    lineHeight: 21,
-    color: "#6B7280",
-    textAlign: "center",
-  },
-
-  redirectContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 20,
-  },
-
-  redirectDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#4ADE80",
-    marginRight: 8,
-  },
-
-  redirectText: {
-    fontSize: 12,
-    color: "#9CA3AF",
+    color: "#fff",
+    fontSize: 34,
+    fontWeight: "600",
   },
 });

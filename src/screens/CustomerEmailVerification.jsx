@@ -6,96 +6,343 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import { getRegistrationData } from "../data/registrationStore";
+
+import {
+  reload,
+  sendEmailVerification,
+  signOut,
+} from "firebase/auth";
+
+import {
+  doc,
+  updateDoc,
+} from "firebase/firestore";
+
+import { auth, db } from "../firebase";
+
+import {
+  clearRegistrationData,
+  getRegistrationData,
+} from "../data/registrationStore";
 
 export default function CustomerEmailVerification() {
   const router = useRouter();
 
-  const registrationData = getRegistrationData();
-
-  const [verificationCode, setVerificationCode] = useState("");
+  const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
-  const [resendCooldown, setResendCooldown] = useState(60);
+
+  const [checking, setChecking] = useState(false);
+  const [resending, setResending] = useState(false);
+
+  const [resendCooldown, setResendCooldown] =
+    useState(60);
 
   useEffect(() => {
-    if (!registrationData) {
+    const registrationData =
+      getRegistrationData();
+
+    const currentUser = auth.currentUser;
+
+    /*
+     * We don't rely only on registrationStore because
+     * the store is temporary memory.
+     *
+     * Firebase Authentication is the actual source
+     * of the authenticated account.
+     */
+    if (!currentUser) {
       router.replace("/register");
       return;
     }
 
-    setResendCooldown(60);
+    setEmail(
+      registrationData?.email ||
+        currentUser.email ||
+        ""
+    );
+
+    /*
+     * If the user already verified the email,
+     * don't make them verify again.
+     */
+    const checkExistingVerification =
+      async () => {
+        try {
+          await reload(currentUser);
+
+          if (auth.currentUser?.emailVerified) {
+            setSuccess(true);
+          }
+        } catch (error) {
+          console.log(
+            "INITIAL VERIFICATION CHECK ERROR:",
+            error
+          );
+        }
+      };
+
+    checkExistingVerification();
   }, []);
 
   useEffect(() => {
     if (resendCooldown <= 0) return;
 
     const timer = setTimeout(() => {
-      setResendCooldown((current) => current - 1);
+      setResendCooldown(
+        (current) => current - 1
+      );
     }, 1000);
 
-    return () => clearTimeout(timer);
+    return () =>
+      clearTimeout(timer);
   }, [resendCooldown]);
 
-  const handleVerify = () => {
-    setError("");
+  const handleVerify = async () => {
+    if (checking) return;
 
-    setSuccess(true);
+    setChecking(true);
+    setError("");
+    setSuccess(false);
+
+    try {
+      const user = auth.currentUser;
+
+      if (!user) {
+        setError(
+          "Your registration session has expired. Please register again."
+        );
+        return;
+      }
+
+      /*
+       * Reload the Firebase user so emailVerified
+       * contains the latest value from Firebase.
+       */
+      await reload(user);
+
+      if (!auth.currentUser?.emailVerified) {
+        setError(
+          "Your email has not been verified yet. Please open the verification email and click the verification link."
+        );
+        return;
+      }
+
+      /*
+       * Update the customer's Firestore document.
+       */
+      try {
+        await updateDoc(
+          doc(
+            db,
+            "customers",
+            user.uid
+          ),
+          {
+            emailVerified: true,
+            updatedAt: new Date().toISOString(),
+          }
+        );
+      } catch (firestoreError) {
+        /*
+         * The Firebase email is already verified.
+         * If Firestore update fails, we still allow
+         * the user to continue.
+         */
+        console.log(
+          "FIRESTORE VERIFICATION UPDATE ERROR:",
+          firestoreError
+        );
+      }
+
+      clearRegistrationData();
+
+      setSuccess(true);
+    } catch (error) {
+      console.log(
+        "VERIFICATION CHECK ERROR:",
+        error
+      );
+
+      setError(
+        "Unable to check your email verification status. Please try again."
+      );
+    } finally {
+      setChecking(false);
+    }
   };
 
-  const handleResend = () => {
-    if (resendCooldown > 0) return;
+  const handleResend = async () => {
+    if (
+      resendCooldown > 0 ||
+      resending
+    ) {
+      return;
+    }
 
-    setResendCooldown(60);
+    setResending(true);
     setError("");
+    setSuccess(false);
+
+    try {
+      const user = auth.currentUser;
+
+      if (!user) {
+        setError(
+          "Your registration session has expired. Please register again."
+        );
+        return;
+      }
+
+      await reload(user);
+
+      /*
+       * Don't send another verification email
+       * if the account is already verified.
+       */
+      if (auth.currentUser?.emailVerified) {
+        setSuccess(true);
+        return;
+      }
+
+      await sendEmailVerification(
+        auth.currentUser
+      );
+
+      setResendCooldown(60);
+
+      setError(
+        ""
+      );
+
+      /*
+       * Show a temporary success state for the
+       * resend operation, but don't show the
+       * "Email Verified" success screen.
+       */
+      setResendSuccess(true);
+    } catch (error) {
+      console.log(
+        "RESEND VERIFICATION ERROR:",
+        error
+      );
+
+      if (
+        error?.code ===
+        "auth/too-many-requests"
+      ) {
+        setError(
+          "Too many verification emails were requested. Please wait before trying again."
+        );
+      } else {
+        setError(
+          "Unable to resend the verification email. Please try again."
+        );
+      }
+    } finally {
+      setResending(false);
+    }
   };
 
-  const handleChangeEmail = () => {
+  const handleChangeEmail = async () => {
+    try {
+      /*
+       * Sign out first so the previous account doesn't
+       * remain authenticated while registering another email.
+       */
+      await signOut(auth);
+    } catch (error) {
+      console.log(
+        "SIGN OUT ERROR:",
+        error
+      );
+    }
+
+    clearRegistrationData();
+
     router.replace("/register");
   };
 
-  const maskedEmail = registrationData?.email
+  const handleContinue = () => {
+    clearRegistrationData();
+
+    router.replace("/dashboard");
+  };
+
+  const [resendSuccess, setResendSuccess] =
+    useState(false);
+
+  const maskedEmail = email
     ? (() => {
-        const [local, domain] =
-          registrationData.email.split("@");
+        const [
+          local,
+          domain,
+        ] = email.split("@");
 
         if (!local || !domain) {
-          return registrationData.email;
+          return email;
         }
 
-        const visible = local.slice(0, 3);
+        const visible = local.slice(
+          0,
+          Math.min(3, local.length)
+        );
+
         const stars = "*".repeat(
-          Math.max(3, local.length - 3)
+          Math.max(
+            3,
+            local.length - visible.length
+          )
         );
 
         return `${visible}${stars}@${domain}`;
       })()
     : "";
 
-  if (!registrationData) {
-    return null;
-  }
-
+  /*
+   * SUCCESS SCREEN
+   */
   if (success) {
     return (
       <LinearGradient
-        colors={["#F5F5F2", "#E7E7E2", "#B8B8B3", "#7A7A76"]}
-        locations={[0, 0.35, 0.78, 1]}
+        colors={[
+          "#F5F5F2",
+          "#E7E7E2",
+          "#B8B8B3",
+          "#7A7A76",
+        ]}
+        locations={[
+          0,
+          0.35,
+          0.78,
+          1,
+        ]}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 1 }}
         style={styles.container}
       >
         <ScrollView
-          contentContainerStyle={styles.successContent}
-          showsVerticalScrollIndicator={false}
+          contentContainerStyle={
+            styles.successContent
+          }
+          showsVerticalScrollIndicator={
+            false
+          }
         >
-          <View style={styles.successCard}>
+          <View
+            style={
+              styles.successCard
+            }
+          >
             {/* Logo */}
-            <View style={styles.logoContainer}>
+            <View
+              style={
+                styles.logoContainer
+              }
+            >
               <Image
                 source={require("../../assets/logo.png")}
                 style={styles.logo}
@@ -104,39 +351,75 @@ export default function CustomerEmailVerification() {
             </View>
 
             {/* Success Icon */}
-            <View style={styles.successIcon}>
-              <Text style={styles.successIconText}>
+            <View
+              style={
+                styles.successIcon
+              }
+            >
+              <Text
+                style={
+                  styles.successIconText
+                }
+              >
                 ✓
               </Text>
             </View>
 
             {/* Success Title */}
-            <Text style={styles.successTitle}>
+            <Text
+              style={
+                styles.successTitle
+              }
+            >
               Email Verified!
             </Text>
 
-            <Text style={styles.successDescription}>
-              Your MPRSS account is ready. You can now access
-              your motorcycle and service management features.
+            <Text
+              style={
+                styles.successDescription
+              }
+            >
+              Your MPRSS account is ready.
+              You can now access your
+              motorcycle and service
+              management features.
             </Text>
 
-            <View style={styles.redirectContainer}>
-              <View style={styles.pulseDot} />
+            <View
+              style={
+                styles.redirectContainer
+              }
+            >
+              <View
+                style={
+                  styles.pulseDot
+                }
+              />
 
-              <Text style={styles.redirectText}>
+              <Text
+                style={
+                  styles.redirectText
+                }
+              >
                 Registration complete
               </Text>
             </View>
 
             {/* Continue */}
             <TouchableOpacity
-              style={styles.continueButton}
-              onPress={() =>
-                router.replace("/dashboard")
+              style={
+                styles.continueButton
+              }
+              onPress={
+                handleContinue
               }
               activeOpacity={0.9}
             >
-              <Text style={styles.continueButtonText}>
+              <Text
+                style={
+                  styles.continueButtonText
+                }
+              >
                 Continue
               </Text>
             </TouchableOpacity>
@@ -146,24 +429,43 @@ export default function CustomerEmailVerification() {
     );
   }
 
+  /*
+   * VERIFICATION SCREEN
+   */
   return (
     <LinearGradient
-      colors={["#F5F5F2", "#E7E7E2", "#B8B8B3", "#7A7A76"]}
-      locations={[0, 0.35, 0.78, 1]}
+      colors={[
+        "#F5F5F2",
+        "#E7E7E2",
+        "#B8B8B3",
+        "#7A7A76",
+      ]}
+      locations={[
+        0,
+        0.35,
+        0.78,
+        1,
+      ]}
       start={{ x: 0.5, y: 0 }}
       end={{ x: 0.5, y: 1 }}
       style={styles.container}
     >
       <ScrollView
-        contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
+        contentContainerStyle={
+          styles.content
+        }
+        showsVerticalScrollIndicator={
+          false
+        }
       >
         <View style={styles.wrapper}>
           <View style={styles.card}>
-
             {/* Logo */}
-            <View style={styles.logoContainer}>
+            <View
+              style={
+                styles.logoContainer
+              }
+            >
               <Image
                 source={require("../../assets/logo.png")}
                 style={styles.logo}
@@ -172,16 +474,32 @@ export default function CustomerEmailVerification() {
             </View>
 
             {/* Email Icon */}
-            <View style={styles.mailIconOuter}>
-              <View style={styles.mailIconInner}>
-                <Text style={styles.mailIcon}>
+            <View
+              style={
+                styles.mailIconOuter
+              }
+            >
+              <View
+                style={
+                  styles.mailIconInner
+                }
+              >
+                <Text
+                  style={
+                    styles.mailIcon
+                  }
+                >
                   ✉
                 </Text>
               </View>
             </View>
 
             {/* Heading */}
-            <View style={styles.headingContainer}>
+            <View
+              style={
+                styles.headingContainer
+              }
+            >
               <Text
                 style={styles.heading}
                 numberOfLines={1}
@@ -191,44 +509,82 @@ export default function CustomerEmailVerification() {
                 Verify Your Email
               </Text>
 
-              <Text style={styles.description}>
-                We've sent a verification code to your email
-                address. Enter the code below to verify your
-                account.
+              <Text
+                style={
+                  styles.description
+                }
+              >
+                We've sent a verification
+                link to your email address.
+                Please open the email and
+                click the verification link
+                to verify your account.
               </Text>
 
-              <Text style={styles.maskedEmail}>
+              <Text
+                style={
+                  styles.maskedEmail
+                }
+              >
                 {maskedEmail}
               </Text>
             </View>
 
-            {/* Verification Code */}
-            <View style={styles.field}>
-              <Text style={styles.label}>
-                6-DIGIT VERIFICATION CODE
+            {/* Information Box */}
+            <View
+              style={
+                styles.infoBox
+              }
+            >
+              <Text
+                style={
+                  styles.infoTitle
+                }
+              >
+                Check your inbox
               </Text>
 
-              <TextInput
-                value={verificationCode}
-                onChangeText={(value) => {
-                  setVerificationCode(
-                    value.replace(/\D/g, "").slice(0, 6)
-                  );
-                  setError("");
-                }}
-                style={styles.codeInput}
-                placeholder="000000"
-                placeholderTextColor="#d1d5db"
-                keyboardType="number-pad"
-                maxLength={6}
-                textAlign="center"
-              />
+              <Text
+                style={
+                  styles.infoText
+                }
+              >
+                Look for an email from Firebase
+                and click the verification link
+                inside it. If you don't see it,
+                check your Spam or Junk folder.
+              </Text>
             </View>
+
+            {/* Resend Success */}
+            {resendSuccess && (
+              <View
+                style={
+                  styles.successBox
+                }
+              >
+                <Text
+                  style={
+                    styles.successBoxText
+                  }
+                >
+                  Verification email sent successfully.
+                </Text>
+              </View>
+            )}
 
             {/* Error */}
             {error !== "" && (
-              <View style={styles.errorBox}>
-                <Text style={styles.errorText}>
+              <View
+                style={
+                  styles.errorBox
+                }
+              >
+                <Text
+                  style={
+                    styles.errorText
+                  }
+                >
                   {error}
                 </Text>
               </View>
@@ -236,45 +592,76 @@ export default function CustomerEmailVerification() {
 
             {/* Verify */}
             <TouchableOpacity
-              style={styles.verifyButton}
-              onPress={handleVerify}
+              style={[
+                styles.verifyButton,
+                checking &&
+                  styles.buttonDisabled,
+              ]}
+              onPress={
+                handleVerify
+              }
+              disabled={checking}
               activeOpacity={0.9}
             >
-              <Text style={styles.verifyButtonText}>
-                Verify Email
+              <Text
+                style={
+                  styles.verifyButtonText
+                }
+              >
+                {checking
+                  ? "Checking..."
+                  : "I've Verified My Email"}
               </Text>
             </TouchableOpacity>
 
             {/* Resend */}
-            <View style={styles.resendContainer}>
+            <View
+              style={
+                styles.resendContainer
+              }
+            >
               <TouchableOpacity
-                onPress={handleResend}
-                disabled={resendCooldown > 0}
+                onPress={
+                  handleResend
+                }
+                disabled={
+                  resendCooldown > 0 ||
+                  resending
+                }
                 activeOpacity={0.7}
               >
                 <Text
                   style={[
                     styles.resendText,
-                    resendCooldown > 0 &&
+                    (resendCooldown >
+                      0 ||
+                      resending) &&
                       styles.resendDisabled,
                   ]}
                 >
-                  {resendCooldown > 0
-                    ? `Resend Code (${resendCooldown}s)`
-                    : "Resend Code"}
+                  {resending
+                    ? "Sending..."
+                    : resendCooldown > 0
+                    ? `Resend Verification Email (${resendCooldown}s)`
+                    : "Resend Verification Email"}
                 </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                onPress={handleChangeEmail}
+                onPress={
+                  handleChangeEmail
+                }
                 activeOpacity={0.7}
               >
-                <Text style={styles.changeEmailText}>
+                <Text
+                  style={
+                    styles.changeEmailText
+                  }
+                >
                   Change Email
                 </Text>
               </TouchableOpacity>
             </View>
-
           </View>
         </View>
       </ScrollView>
@@ -404,30 +791,27 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 
-  field: {
+  infoBox: {
+    backgroundColor: "#F8F8F5",
+    borderWidth: 1,
+    borderColor: "#E5E5E0",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
     marginBottom: 16,
   },
 
-  label: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#6B7280",
-    letterSpacing: 1,
-    marginBottom: 6,
-    textAlign: "center",
+  infoTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#0A0F1A",
+    marginBottom: 5,
   },
 
-  codeInput: {
-    height: 64,
-    borderWidth: 2,
-    borderColor: "#E5E7EB",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    fontSize: 26,
-    fontWeight: "700",
-    letterSpacing: 8,
-    color: "#111827",
-    backgroundColor: "#FFFFFF",
+  infoText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#6B7280",
   },
 
   errorBox: {
@@ -443,6 +827,23 @@ const styles = StyleSheet.create({
   errorText: {
     color: "#B91C1C",
     fontSize: 12,
+    lineHeight: 18,
+  },
+
+  successBox: {
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 16,
+  },
+
+  successBoxText: {
+    color: "#15803D",
+    fontSize: 12,
+    lineHeight: 18,
   },
 
   verifyButton: {
@@ -452,6 +853,10 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
+  },
+
+  buttonDisabled: {
+    opacity: 0.6,
   },
 
   verifyButtonText: {
@@ -469,6 +874,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "500",
     color: "#0A0F1A",
+    textAlign: "center",
   },
 
   resendDisabled: {

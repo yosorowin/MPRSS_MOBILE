@@ -1,5 +1,4 @@
-import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Modal,
   ScrollView,
@@ -9,19 +8,36 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
 import CustomerLayout from "../components/CustomerLayout";
 
-export default function CustomerMotorcycles() {
-  const router = useRouter();
+import { onAuthStateChanged } from "firebase/auth";
+import {
+  addDoc,
+  collection,
+  doc,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from "firebase/firestore";
 
+import { auth, db } from "../firebase";
+
+export default function CustomerMotorcycles() {
+  const [currentUser, setCurrentUser] = useState(null);
   const [motorcycles, setMotorcycles] = useState([]);
+
   const [showForm, setShowForm] = useState(false);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] =
+    useState(false);
 
   const [editingMoto, setEditingMoto] = useState(null);
   const [deletingMoto, setDeletingMoto] = useState(null);
 
   const [deleteReason, setDeleteReason] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const [motorcycleData, setMotorcycleData] = useState({
     brand: "",
@@ -31,6 +47,58 @@ export default function CustomerMotorcycles() {
     vin: "",
     color: "",
   });
+
+  /*
+   * FIREBASE AUTH LISTENER
+   */
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      (user) => {
+        setCurrentUser(user || null);
+      }
+    );
+
+    return unsubscribe;
+  }, []);
+
+  /*
+   * FIREBASE MOTORCYCLE LISTENER
+   */
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      setMotorcycles([]);
+      return undefined;
+    }
+
+    const motorcyclesQuery = query(
+      collection(db, "motorcycles"),
+      where("customerId", "==", currentUser.uid)
+    );
+
+    const unsubscribe = onSnapshot(
+      motorcyclesQuery,
+      (snapshot) => {
+        const firebaseMotorcycles =
+          snapshot.docs.map((item) => ({
+            id: item.id,
+            ...item.data(),
+          }));
+
+        setMotorcycles(firebaseMotorcycles);
+      },
+      (error) => {
+        console.error(
+          "Error loading motorcycles:",
+          error
+        );
+
+        setMotorcycles([]);
+      }
+    );
+
+    return unsubscribe;
+  }, [currentUser?.uid]);
 
   const resetForm = () => {
     setMotorcycleData({
@@ -50,10 +118,10 @@ export default function CustomerMotorcycles() {
     setEditingMoto(moto);
 
     setMotorcycleData({
-      brand: moto.brand,
-      model: moto.model,
-      year: String(moto.year),
-      plate: moto.plate,
+      brand: moto.brand || "",
+      model: moto.model || "",
+      year: moto.year ? String(moto.year) : "",
+      plate: moto.plate || "",
       vin: moto.vin || "",
       color: moto.color || "",
     });
@@ -61,8 +129,9 @@ export default function CustomerMotorcycles() {
     setShowForm(true);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (
+      !currentUser?.uid ||
       !motorcycleData.brand.trim() ||
       !motorcycleData.model.trim() ||
       !motorcycleData.year.trim() ||
@@ -71,41 +140,47 @@ export default function CustomerMotorcycles() {
       return;
     }
 
-    if (editingMoto) {
-      setMotorcycles((current) =>
-        current.map((moto) =>
-          moto.id === editingMoto.id
-            ? {
-                ...moto,
-                brand: motorcycleData.brand.trim(),
-                model: motorcycleData.model.trim(),
-                year: Number(motorcycleData.year),
-                plate: motorcycleData.plate.trim(),
-                vin: motorcycleData.vin.trim(),
-                color: motorcycleData.color.trim(),
-              }
-            : moto
-        )
-      );
-    } else {
-      const newMotorcycle = {
-        id: `moto-${Date.now()}`,
-        customerId: "cust-1",
+    try {
+      setSaving(true);
+
+      const data = {
         brand: motorcycleData.brand.trim(),
         model: motorcycleData.model.trim(),
         year: Number(motorcycleData.year),
         plate: motorcycleData.plate.trim(),
         vin: motorcycleData.vin.trim(),
         color: motorcycleData.color.trim(),
+        customerId: currentUser.uid,
+        customerUid: currentUser.uid,
+        customerEmail: currentUser.email || "",
+        updatedAt: serverTimestamp(),
       };
 
-      setMotorcycles((current) => [
-        ...current,
-        newMotorcycle,
-      ]);
-    }
+      if (editingMoto) {
+        const motorcycleRef = doc(
+          db,
+          "motorcycles",
+          editingMoto.id
+        );
 
-    resetForm();
+        await updateDoc(motorcycleRef, data);
+      } else {
+        await addDoc(collection(db, "motorcycles"), {
+          ...data,
+          deletionRequest: null,
+          createdAt: serverTimestamp(),
+        });
+      }
+
+      resetForm();
+    } catch (error) {
+      console.error(
+        "Error saving motorcycle:",
+        error
+      );
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDeleteClick = (moto) => {
@@ -114,14 +189,45 @@ export default function CustomerMotorcycles() {
     setShowDeleteModal(true);
   };
 
-  const handleConfirmDelete = () => {
-    if (!deleteReason.trim()) {
+  const handleConfirmDelete = async () => {
+    if (
+      !deleteReason.trim() ||
+      !deletingMoto ||
+      !currentUser?.uid
+    ) {
       return;
     }
 
-    setShowDeleteModal(false);
-    setDeletingMoto(null);
-    setDeleteReason("");
+    try {
+      setSaving(true);
+
+      const motorcycleRef = doc(
+        db,
+        "motorcycles",
+        deletingMoto.id
+      );
+
+      await updateDoc(motorcycleRef, {
+        deletionRequest: {
+          status: "pending",
+          reason: deleteReason.trim(),
+          requestedAt: serverTimestamp(),
+          requestedBy: currentUser.uid,
+        },
+        updatedAt: serverTimestamp(),
+      });
+
+      setShowDeleteModal(false);
+      setDeletingMoto(null);
+      setDeleteReason("");
+    } catch (error) {
+      console.error(
+        "Error requesting motorcycle deletion:",
+        error
+      );
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -147,6 +253,7 @@ export default function CustomerMotorcycles() {
             style={styles.addButton}
             onPress={() => {
               setEditingMoto(null);
+
               setMotorcycleData({
                 brand: "",
                 model: "",
@@ -155,6 +262,7 @@ export default function CustomerMotorcycles() {
                 vin: "",
                 color: "",
               });
+
               setShowForm(true);
             }}
             activeOpacity={0.9}
@@ -179,13 +287,16 @@ export default function CustomerMotorcycles() {
             </Text>
 
             <Text style={styles.emptyText}>
-              Add your motorcycle to start managing its details,
-              services, and maintenance records.
+              Add your motorcycle to start managing its
+              details, services, and maintenance records.
             </Text>
 
             <TouchableOpacity
               style={styles.emptyAddButton}
-              onPress={() => setShowForm(true)}
+              onPress={() => {
+                setEditingMoto(null);
+                setShowForm(true);
+              }}
             >
               <Text style={styles.emptyAddText}>
                 Add Motorcycle
@@ -219,7 +330,9 @@ export default function CustomerMotorcycles() {
 
                 <TouchableOpacity
                   style={styles.deleteButton}
-                  onPress={() => handleDeleteClick(moto)}
+                  onPress={() =>
+                    handleDeleteClick(moto)
+                  }
                 >
                   <Text style={styles.deleteText}>
                     Delete
@@ -231,6 +344,15 @@ export default function CustomerMotorcycles() {
             <Text style={styles.motorcycleName}>
               {moto.brand} {moto.model}
             </Text>
+
+            {moto.deletionRequest?.status ===
+              "pending" && (
+              <View style={styles.pendingDeletionBox}>
+                <Text style={styles.pendingDeletionText}>
+                  Deletion request pending admin approval.
+                </Text>
+              </View>
+            )}
 
             <View style={styles.details}>
               <DetailRow
@@ -363,6 +485,7 @@ export default function CustomerMotorcycles() {
                 <TouchableOpacity
                   style={styles.cancelButton}
                   onPress={resetForm}
+                  disabled={saving}
                 >
                   <Text style={styles.cancelButtonText}>
                     Cancel
@@ -370,11 +493,20 @@ export default function CustomerMotorcycles() {
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={styles.saveButton}
+                  style={[
+                    styles.saveButton,
+                    saving &&
+                      styles.disabledButton,
+                  ]}
                   onPress={handleSave}
+                  disabled={saving}
                 >
                   <Text style={styles.saveButtonText}>
-                    {editingMoto ? "Update" : "Save"}
+                    {saving
+                      ? "Saving..."
+                      : editingMoto
+                      ? "Update"
+                      : "Save"}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -447,9 +579,9 @@ export default function CustomerMotorcycles() {
 
             <View style={styles.warningBox}>
               <Text style={styles.warningText}>
-                This deletion request will be sent to admin
-                for approval. The motorcycle will remain in
-                your account until approved.
+                This deletion request will be sent to
+                admin for approval. The motorcycle will
+                remain in your account until approved.
               </Text>
             </View>
 
@@ -461,6 +593,7 @@ export default function CustomerMotorcycles() {
                   setDeletingMoto(null);
                   setDeleteReason("");
                 }}
+                disabled={saving}
               >
                 <Text style={styles.cancelButtonText}>
                   Cancel
@@ -468,11 +601,18 @@ export default function CustomerMotorcycles() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={styles.submitDeleteButton}
+                style={[
+                  styles.submitDeleteButton,
+                  saving &&
+                    styles.disabledDeleteButton,
+                ]}
                 onPress={handleConfirmDelete}
+                disabled={saving}
               >
                 <Text style={styles.submitDeleteText}>
-                  Submit Request
+                  {saving
+                    ? "Submitting..."
+                    : "Submit Request"}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -683,6 +823,20 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 
+  pendingDeletionBox: {
+    backgroundColor: "#fffbeb",
+    borderWidth: 1,
+    borderColor: "#fde68a",
+    borderRadius: 8,
+    padding: 9,
+    marginBottom: 12,
+  },
+
+  pendingDeletionText: {
+    fontSize: 10,
+    color: "#92400e",
+  },
+
   details: {
     gap: 8,
   },
@@ -812,6 +966,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
+  disabledButton: {
+    opacity: 0.6,
+  },
+
   saveButtonText: {
     color: "#ffffff",
     fontSize: 12,
@@ -882,6 +1040,10 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     paddingVertical: 12,
     alignItems: "center",
+  },
+
+  disabledDeleteButton: {
+    opacity: 0.6,
   },
 
   submitDeleteText: {

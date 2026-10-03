@@ -24,6 +24,8 @@ export default function CustomerPayment() {
   const [serviceRequest, setServiceRequest] =
     useState(null);
   const [copied, setCopied] = useState(false);
+  const [submittingPayment, setSubmittingPayment] =
+    useState(false);
 
   useEffect(() => {
     const request = getCurrentServiceRequest();
@@ -34,26 +36,59 @@ export default function CustomerPayment() {
     }
 
     setServiceRequest(request);
-  }, []);
+  }, [router]);
 
   const handlePaymentMethodSelect = (method) => {
-    setPaymentMethod(method);
-  };
-
-  const handleConfirmPayment = () => {
-    if (!paymentMethod || !serviceRequest) {
+    if (submittingPayment) {
       return;
     }
 
-    updateCurrentServiceRequest({
-      paymentMethod,
-      paymentStatus: "pending",
-      paymentDate: new Date()
-        .toISOString()
-        .split("T")[0],
-    });
+    setPaymentMethod(method);
+  };
 
-    setShowConfirmation(true);
+  const handleConfirmPayment = async () => {
+    if (
+      !paymentMethod ||
+      !serviceRequest ||
+      submittingPayment
+    ) {
+      return;
+    }
+
+    setSubmittingPayment(true);
+
+    try {
+      const paymentDate = new Date()
+        .toISOString()
+        .split("T")[0];
+
+      await updateCurrentServiceRequest({
+        paymentMethod,
+        paymentStatus: "Pending",
+        paymentDate,
+      });
+
+      setServiceRequest((previous) => ({
+        ...previous,
+        paymentMethod,
+        paymentStatus: "Pending",
+        paymentDate,
+      }));
+
+      setShowConfirmation(true);
+    } catch (error) {
+      console.error(
+        "PAYMENT METHOD UPDATE ERROR:",
+        error
+      );
+
+      alert(
+        error?.message ||
+          "Unable to save your payment method. Please try again."
+      );
+    } finally {
+      setSubmittingPayment(false);
+    }
   };
 
   const handleCopyToClipboard = async (text) => {
@@ -82,9 +117,11 @@ export default function CustomerPayment() {
     );
   }
 
-  /* =====================================================
-     REQUEST SUBMITTED
-  ===================================================== */
+  /*
+   * =====================================================
+   * REQUEST SUBMITTED
+   * =====================================================
+   */
 
   if (showConfirmation) {
     return (
@@ -95,7 +132,6 @@ export default function CustomerPayment() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.confirmationCard}>
-            {/* Status Icon */}
             <View style={styles.statusIconWrapper}>
               <View style={styles.statusIcon}>
                 <Text style={styles.statusIconText}>
@@ -115,7 +151,6 @@ export default function CustomerPayment() {
               reviews your request.
             </Text>
 
-            {/* Status Tracker */}
             <View style={styles.trackerBox}>
               <View style={styles.trackerRow}>
                 <View style={styles.trackerStep}>
@@ -182,7 +217,6 @@ export default function CustomerPayment() {
               </View>
             </View>
 
-            {/* Request Details */}
             <View style={styles.sectionBox}>
               <Text style={styles.sectionTitle}>
                 Request Details
@@ -215,7 +249,6 @@ export default function CustomerPayment() {
               />
             </View>
 
-            {/* Status Cards */}
             <View style={styles.statusCards}>
               <View style={styles.statusCard}>
                 <Text style={styles.statusCardLabel}>
@@ -242,7 +275,6 @@ export default function CustomerPayment() {
               </View>
             </View>
 
-            {/* Payment Information */}
             <View style={styles.sectionBox}>
               <Text style={styles.sectionTitle}>
                 Payment Information
@@ -258,9 +290,13 @@ export default function CustomerPayment() {
                     : "Cash"
                 }
               />
+
+              <DetailRow
+                label="Payment Status:"
+                value="Pending"
+              />
             </View>
 
-            {/* Important Note */}
             <View style={styles.importantBox}>
               <Text style={styles.importantTitle}>
                 ⚠️ Important:
@@ -290,9 +326,11 @@ export default function CustomerPayment() {
     );
   }
 
-  /* =====================================================
-     PAYMENT METHOD PAGE
-  ===================================================== */
+  /*
+   * =====================================================
+   * PAYMENT METHOD PAGE
+   * =====================================================
+   */
 
   return (
     <CustomerLayout title="Payment Method">
@@ -301,13 +339,13 @@ export default function CustomerPayment() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Back Button */}
         <TouchableOpacity
           style={styles.backButton}
           onPress={() =>
             router.replace("/services")
           }
           activeOpacity={0.7}
+          disabled={submittingPayment}
         >
           <Text style={styles.backIcon}>
             ‹
@@ -318,7 +356,6 @@ export default function CustomerPayment() {
           </Text>
         </TouchableOpacity>
 
-        {/* Service Summary */}
         <View style={styles.card}>
           <View style={styles.referenceRow}>
             <Text style={styles.referenceLabel}>
@@ -357,7 +394,6 @@ export default function CustomerPayment() {
           </View>
         </View>
 
-        {/* Important Note */}
         <View style={styles.importantBox}>
           <Text style={styles.importantTitle}>
             ⚠️ Important:
@@ -373,14 +409,12 @@ export default function CustomerPayment() {
           </Text>
         </View>
 
-        {/* Payment Method Selection */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>
             Select Payment Method
           </Text>
 
           <View style={styles.methodList}>
-            {/* Cash */}
             <PaymentMethodButton
               method="cash"
               selected={paymentMethod === "cash"}
@@ -392,7 +426,6 @@ export default function CustomerPayment() {
               }
             />
 
-            {/* GCash */}
             <PaymentMethodButton
               method="gcash"
               selected={paymentMethod === "gcash"}
@@ -404,7 +437,6 @@ export default function CustomerPayment() {
               }
             />
 
-            {/* Bank */}
             <PaymentMethodButton
               method="bank"
               selected={paymentMethod === "bank"}
@@ -417,10 +449,6 @@ export default function CustomerPayment() {
             />
           </View>
         </View>
-
-        {/* =====================================================
-            GCASH DETAILS
-        ===================================================== */}
 
         {paymentMethod === "gcash" && (
           <View style={styles.card}>
@@ -499,10 +527,6 @@ export default function CustomerPayment() {
             </View>
           </View>
         )}
-
-        {/* =====================================================
-            BANK DETAILS
-        ===================================================== */}
 
         {paymentMethod === "bank" && (
           <View style={styles.card}>
@@ -592,10 +616,6 @@ export default function CustomerPayment() {
           </View>
         )}
 
-        {/* =====================================================
-            CASH DETAILS
-        ===================================================== */}
-
         {paymentMethod === "cash" && (
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>
@@ -616,19 +636,24 @@ export default function CustomerPayment() {
           </View>
         )}
 
-        {/* Submit Service Request */}
         <TouchableOpacity
           style={[
             styles.submitButton,
-            !paymentMethod &&
+            (!paymentMethod ||
+              submittingPayment) &&
               styles.submitButtonDisabled,
           ]}
-          disabled={!paymentMethod}
+          disabled={
+            !paymentMethod ||
+            submittingPayment
+          }
           onPress={handleConfirmPayment}
           activeOpacity={0.9}
         >
           <Text style={styles.submitButtonText}>
-            Submit Service Request
+            {submittingPayment
+              ? "Submitting..."
+              : "Submit Service Request"}
           </Text>
         </TouchableOpacity>
       </ScrollView>
@@ -636,9 +661,11 @@ export default function CustomerPayment() {
   );
 }
 
-/* =====================================================
-   COMPONENTS
-===================================================== */
+/*
+ * =====================================================
+ * COMPONENTS
+ * =====================================================
+ */
 
 function PaymentMethodButton({
   selected,
@@ -743,9 +770,11 @@ function Instruction({ number, children }) {
   );
 }
 
-/* =====================================================
-   STYLES
-===================================================== */
+/*
+ * =====================================================
+ * STYLES
+ * =====================================================
+ */
 
 const styles = StyleSheet.create({
   container: {
@@ -1063,9 +1092,9 @@ const styles = StyleSheet.create({
     color: "#ffffff",
   },
 
-  /* =========================
-     CONFIRMATION
-  ========================= */
+  /*
+   * CONFIRMATION
+   */
 
   statusIconWrapper: {
     alignItems: "center",
@@ -1229,5 +1258,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     paddingVertical: 2,
     borderRadius: 4,
+  },
+
+  primaryButton: {
+    width: "100%",
+    minHeight: 48,
+    borderRadius: 8,
+    backgroundColor: "#000000",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  primaryButtonText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#ffffff",
   },
 });

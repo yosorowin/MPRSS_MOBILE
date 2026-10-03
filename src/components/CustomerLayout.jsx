@@ -1,6 +1,15 @@
 import { usePathname, useRouter } from "expo-router";
-import { useState } from "react";
+import { signOut } from "firebase/auth";
 import {
+  collection,
+  onSnapshot,
+  query,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+import { useEffect, useState } from "react";
+import {
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -8,6 +17,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { auth, db } from "../firebase";
 
 export default function CustomerLayout({ title, children }) {
   const router = useRouter();
@@ -17,54 +27,159 @@ export default function CustomerLayout({ title, children }) {
   const [showNotifications, setShowNotifications] =
     useState(false);
 
+  const [notifications, setNotifications] = useState([]);
+
+  /*
+   * ==========================================
+   * REAL-TIME FIREBASE NOTIFICATIONS
+   * ==========================================
+   */
+
+  useEffect(() => {
+    const currentUser = auth.currentUser;
+
+    if (!currentUser) {
+      setNotifications([]);
+      return;
+    }
+
+    const notificationsRef = collection(
+      db,
+      "notifications"
+    );
+
+    const notificationsQuery = query(
+      notificationsRef,
+      where("customerId", "==", currentUser.uid)
+    );
+
+    const unsubscribe = onSnapshot(
+      notificationsQuery,
+      (snapshot) => {
+        const notificationList = snapshot.docs.map(
+          (notificationDoc) => {
+            const data = notificationDoc.data();
+
+            return {
+              id: notificationDoc.id,
+              type: data.type || "service",
+              title: data.title || "Notification",
+              message: data.message || "",
+              route: data.route || "/dashboard",
+              unread: data.read !== true,
+              createdAt: data.createdAt || null,
+            };
+          }
+        );
+
+        /*
+         * Sort newest first.
+         * We do this locally so you don't immediately
+         * need a Firestore composite index.
+         */
+        notificationList.sort((a, b) => {
+          const aTime = a.createdAt?.toMillis
+            ? a.createdAt.toMillis()
+            : 0;
+
+          const bTime = b.createdAt?.toMillis
+            ? b.createdAt.toMillis()
+            : 0;
+
+          return bTime - aTime;
+        });
+
+        setNotifications(notificationList);
+      },
+      (error) => {
+        console.error(
+          "Notifications listener error:",
+          error
+        );
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  /*
+   * ==========================================
+   * TIME FORMATTER
+   * ==========================================
+   */
+
+  const formatNotificationTime = (timestamp) => {
+    if (!timestamp?.toDate) {
+      return "Just now";
+    }
+
+    const notificationDate = timestamp.toDate();
+    const now = new Date();
+
+    const difference =
+      now.getTime() - notificationDate.getTime();
+
+    const seconds = Math.floor(difference / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    if (seconds < 60) {
+      return "Just now";
+    }
+
+    if (minutes < 60) {
+      return `${minutes} ${
+        minutes === 1 ? "minute" : "minutes"
+      } ago`;
+    }
+
+    if (hours < 24) {
+      return `${hours} ${
+        hours === 1 ? "hour" : "hours"
+      } ago`;
+    }
+
+    if (days < 7) {
+      return `${days} ${days === 1 ? "day" : "days"} ago`;
+    }
+
+    return notificationDate.toLocaleDateString();
+  };
+
+  /*
+   * ==========================================
+   * UNREAD COUNT
+   * ==========================================
+   */
+
+  const unreadCount = notifications.filter(
+    (notification) => notification.unread
+  ).length;
+
+  /*
+   * ==========================================
+   * NAVIGATION
+   * ==========================================
+   */
+
   const menuItems = [
     { route: "/dashboard", label: "Dashboard" },
     { route: "/motorcycles", label: "My Motorcycles" },
     { route: "/services", label: "My Services" },
     { route: "/ai-assistant", label: "AI Assistant" },
     { route: "/builds", label: "My Builds" },
-    { route: "/community-builds", label: "Community Builds" },
-    { route: "/parts-catalog", label: "Parts Catalog" },
+    {
+      route: "/community-builds",
+      label: "Community Builds",
+    },
+    {
+      route: "/parts-catalog",
+      label: "Parts Catalog",
+    },
     { route: "/messages", label: "Messages" },
     { route: "/profile", label: "Profile" },
   ];
-
-  const notifications = [
-    {
-      id: "notification-1",
-      type: "service",
-      title: "Service Request Update",
-      message:
-        "Your service request is currently under review.",
-      time: "10 mins ago",
-      unread: true,
-      route: "/services",
-    },
-    {
-      id: "notification-2",
-      type: "message",
-      title: "New Message",
-      message:
-        "MPRSS Admin sent you a new message.",
-      time: "1 hour ago",
-      unread: true,
-      route: "/messages",
-    },
-    {
-      id: "notification-3",
-      type: "ai",
-      title: "AI Safety Alert",
-      message:
-        "A safety warning was detected in your build.",
-      time: "3 hours ago",
-      unread: true,
-      route: "/ai-assistant",
-    },
-  ];
-
-  const unreadCount = notifications.filter(
-    (notification) => notification.unread
-  ).length;
 
   const handleNavigate = (route) => {
     setSidebarOpen(false);
@@ -72,9 +187,147 @@ export default function CustomerLayout({ title, children }) {
     router.push(route);
   };
 
-  const handleNotificationPress = (notification) => {
+  /*
+   * ==========================================
+   * NOTIFICATION PRESS
+   * ==========================================
+   */
+
+  const handleNotificationPress = async (
+    notification
+  ) => {
     setShowNotifications(false);
+
+    try {
+      if (notification.unread) {
+        await updateDoc(
+          collection(db, "notifications")
+            ? // This part is replaced below by direct document access.
+              // Kept out of the actual operation.
+              null
+            : null,
+          {}
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Notification read error:",
+        error
+      );
+    }
+
+    /*
+     * Navigate even if marking the notification
+     * as read fails.
+     */
     router.push(notification.route);
+  };
+
+  /*
+   * ==========================================
+   * MARK ONE NOTIFICATION AS READ
+   * ==========================================
+   */
+
+  const markNotificationAsRead = async (
+    notification
+  ) => {
+    if (!notification.unread) {
+      return;
+    }
+
+    try {
+      const { doc } = await import("firebase/firestore");
+
+      const notificationRef = doc(
+        db,
+        "notifications",
+        notification.id
+      );
+
+      await updateDoc(notificationRef, {
+        read: true,
+      });
+    } catch (error) {
+      console.error(
+        "Mark notification as read error:",
+        error
+      );
+    }
+  };
+
+  /*
+   * ==========================================
+   * ACTUAL NOTIFICATION PRESS
+   * ==========================================
+   */
+
+  const handleNotificationItemPress = async (
+    notification
+  ) => {
+    setShowNotifications(false);
+
+    await markNotificationAsRead(notification);
+
+    if (notification.route) {
+      router.push(notification.route);
+    }
+  };
+
+  /*
+   * ==========================================
+   * MARK ALL AS READ
+   * ==========================================
+   */
+
+  const handleMarkAllAsRead = async () => {
+    try {
+      const unreadNotifications =
+        notifications.filter(
+          (notification) => notification.unread
+        );
+
+      const { doc } = await import("firebase/firestore");
+
+      await Promise.all(
+        unreadNotifications.map((notification) =>
+          updateDoc(
+            doc(
+              db,
+              "notifications",
+              notification.id
+            ),
+            {
+              read: true,
+            }
+          )
+        )
+      );
+    } catch (error) {
+      console.error(
+        "Mark all notifications as read error:",
+        error
+      );
+    }
+  };
+
+  /*
+   * ==========================================
+   * LOGOUT
+   * ==========================================
+   */
+
+  const handleLogout = async () => {
+    try {
+      setSidebarOpen(false);
+      setShowNotifications(false);
+
+      await signOut(auth);
+
+      router.replace("/login");
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
   };
 
   return (
@@ -118,57 +371,78 @@ export default function CustomerLayout({ title, children }) {
                   <Text
                     style={styles.notificationBadgeText}
                   >
-                    {unreadCount}
+                    {unreadCount > 99
+                      ? "99+"
+                      : unreadCount}
                   </Text>
                 </View>
               )}
             </TouchableOpacity>
 
             {showNotifications && (
-              <>
-                {/* DROPDOWN */}
-                <View style={styles.notificationDropdown}>
-                  <View
-                    style={styles.notificationHeader}
-                  >
-                    <View>
-                      <Text
-                        style={styles.notificationTitle}
-                      >
-                        Notifications
-                      </Text>
-
-                      <Text
-                        style={
-                          styles.notificationSubtitle
-                        }
-                      >
-                        {unreadCount} unread
-                      </Text>
-                    </View>
-
-                    <TouchableOpacity
-                      onPress={() =>
-                        setShowNotifications(false)
-                      }
+              <View style={styles.notificationDropdown}>
+                {/* HEADER */}
+                <View style={styles.notificationHeader}>
+                  <View>
+                    <Text
+                      style={styles.notificationTitle}
                     >
-                      <Text
-                        style={
-                          styles.notificationClose
-                        }
-                      >
-                        ×
-                      </Text>
-                    </TouchableOpacity>
+                      Notifications
+                    </Text>
+
+                    <Text
+                      style={styles.notificationSubtitle}
+                    >
+                      {unreadCount} unread
+                    </Text>
                   </View>
 
-                  <ScrollView
-                    style={
-                      styles.notificationList
+                  <TouchableOpacity
+                    onPress={() =>
+                      setShowNotifications(false)
                     }
-                    showsVerticalScrollIndicator={false}
                   >
-                    {notifications.map(
+                    <Text
+                      style={styles.notificationClose}
+                    >
+                      ×
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* NOTIFICATION LIST */}
+                <ScrollView
+                  style={styles.notificationList}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {notifications.length === 0 ? (
+                    <View style={styles.emptyNotifications}>
+                      <Text
+                        style={
+                          styles.emptyNotificationIcon
+                        }
+                      >
+                        🔔
+                      </Text>
+
+                      <Text
+                        style={
+                          styles.emptyNotificationTitle
+                        }
+                      >
+                        No notifications
+                      </Text>
+
+                      <Text
+                        style={
+                          styles.emptyNotificationMessage
+                        }
+                      >
+                        You're all caught up.
+                      </Text>
+                    </View>
+                  ) : (
+                    notifications.map(
                       (notification) => (
                         <TouchableOpacity
                           key={notification.id}
@@ -178,12 +452,13 @@ export default function CustomerLayout({ title, children }) {
                               styles.notificationItemUnread,
                           ]}
                           onPress={() =>
-                            handleNotificationPress(
+                            handleNotificationItemPress(
                               notification
                             )
                           }
                           activeOpacity={0.8}
                         >
+                          {/* TYPE ICON */}
                           <View
                             style={[
                               styles.notificationTypeIcon,
@@ -213,6 +488,7 @@ export default function CustomerLayout({ title, children }) {
                             </Text>
                           </View>
 
+                          {/* CONTENT */}
                           <View
                             style={
                               styles.notificationContent
@@ -257,28 +533,29 @@ export default function CustomerLayout({ title, children }) {
                                 styles.notificationTime
                               }
                             >
-                              {notification.time}
+                              {formatNotificationTime(
+                                notification.createdAt
+                              )}
                             </Text>
                           </View>
                         </TouchableOpacity>
                       )
-                    )}
-                  </ScrollView>
+                    )
+                  )}
+                </ScrollView>
 
+                {/* MARK ALL AS READ */}
+                {unreadCount > 0 && (
                   <TouchableOpacity
                     style={styles.viewAllButton}
-                    onPress={() =>
-                      setShowNotifications(false)
-                    }
+                    onPress={handleMarkAllAsRead}
                   >
-                    <Text
-                      style={styles.viewAllText}
-                    >
+                    <Text style={styles.viewAllText}>
                       Mark all as read
                     </Text>
                   </TouchableOpacity>
-                </View>
-              </>
+                )}
+              </View>
             )}
           </View>
         </View>
@@ -297,16 +574,19 @@ export default function CustomerLayout({ title, children }) {
       {/* SIDEBAR */}
       {sidebarOpen && (
         <View style={styles.sidebar}>
+          {/* LOGO */}
           <View style={styles.sidebarHeader}>
-            <Text style={styles.logoText}>MPRSS</Text>
-
-            <Text style={styles.userText}>
-              Carlos Reyes
-            </Text>
+            <Image
+              source={require("../../assets/logo.png")}
+              style={styles.sidebarLogo}
+              resizeMode="contain"
+            />
           </View>
 
+          {/* MENU */}
           <ScrollView
             style={styles.menu}
+            contentContainerStyle={styles.menuContent}
             showsVerticalScrollIndicator={false}
           >
             {menuItems.map((item) => {
@@ -340,14 +620,11 @@ export default function CustomerLayout({ title, children }) {
             })}
           </ScrollView>
 
+          {/* FIXED LOGOUT */}
           <View style={styles.logoutContainer}>
             <TouchableOpacity
               style={styles.logoutButton}
-              onPress={() => {
-                setSidebarOpen(false);
-                setShowNotifications(false);
-                router.replace("/login");
-              }}
+              onPress={handleLogout}
               activeOpacity={0.7}
             >
               <Text style={styles.logoutText}>
@@ -443,6 +720,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 2,
     borderColor: "#ffffff",
+    paddingHorizontal: 2,
   },
 
   notificationBadgeText: {
@@ -587,6 +865,30 @@ const styles = StyleSheet.create({
     color: "#9ca3af",
   },
 
+  emptyNotifications: {
+    paddingVertical: 35,
+    paddingHorizontal: 20,
+    alignItems: "center",
+  },
+
+  emptyNotificationIcon: {
+    fontSize: 24,
+    marginBottom: 8,
+    opacity: 0.5,
+  },
+
+  emptyNotificationTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#374151",
+  },
+
+  emptyNotificationMessage: {
+    marginTop: 3,
+    fontSize: 11,
+    color: "#9ca3af",
+  },
+
   viewAllButton: {
     paddingVertical: 12,
     alignItems: "center",
@@ -636,25 +938,23 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     borderBottomWidth: 1,
     borderBottomColor: "#262626",
+    alignItems: "center",
   },
 
-  logoText: {
-    color: "#ffffff",
-    fontSize: 24,
-    fontWeight: "800",
-    letterSpacing: 1,
-  },
-
-  userText: {
-    color: "#9ca3af",
-    fontSize: 13,
-    marginTop: 8,
+  sidebarLogo: {
+    width: 200,
+    height: 65,
+    tintColor: "#ffffff",
   },
 
   menu: {
     flex: 1,
     paddingHorizontal: 12,
+  },
+
+  menuContent: {
     paddingTop: 14,
+    paddingBottom: 90,
   },
 
   menuItem: {
@@ -679,19 +979,28 @@ const styles = StyleSheet.create({
   },
 
   logoutContainer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "#000000",
     borderTopWidth: 1,
     borderTopColor: "#262626",
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 20,
   },
 
   logoutButton: {
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 13,
     borderRadius: 8,
+    backgroundColor: "#111111",
   },
 
   logoutText: {
-    color: "#d1d5db",
+    color: "#ffffff",
     fontSize: 14,
+    fontWeight: "600",
   },
 });

@@ -1,149 +1,176 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-    Image,
-    Modal,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  Image,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
+import {
+  collection,
+  onSnapshot,
+  query,
+  where,
+} from "firebase/firestore";
+
+import { db } from "../firebase";
+
 import CustomerLayout from "../components/CustomerLayout";
-
-const inventory = [
-  {
-    id: "part-1",
-    name: "Engine Oil 10W-40",
-    brand: "Motul",
-    category: "Lubricants",
-    quantity: 45,
-    price: 25,
-    compatibleModels: ["All Models"],
-    safetyNotes: "",
-    image:
-      "https://images.unsplash.com/photo-1615906655593-ad0386982a0f?auto=format&fit=crop&w=700&q=80",
-  },
-  {
-    id: "part-2",
-    name: "Brake Pads - Front",
-    brand: "Brembo",
-    category: "Brake System",
-    quantity: 8,
-    price: 85,
-    compatibleModels: [
-      "Honda CBR600RR",
-      "Yamaha R1",
-      "Kawasaki ZX-10R",
-    ],
-    safetyNotes: "Critical safety component",
-    image:
-      "https://images.unsplash.com/photo-1558981806-ec527fa84c39?auto=format&fit=crop&w=700&q=80",
-  },
-  {
-    id: "part-3",
-    name: "Air Filter",
-    brand: "K&N",
-    category: "Engine",
-    quantity: 15,
-    price: 35,
-    compatibleModels: ["All Models"],
-    safetyNotes: "",
-    image:
-      "https://images.unsplash.com/photo-1558980664-10ea814e0b3c?auto=format&fit=crop&w=700&q=80",
-  },
-  {
-    id: "part-4",
-    name: "Chain Lubricant",
-    brand: "Motul",
-    category: "Lubricants",
-    quantity: 5,
-    price: 18,
-    compatibleModels: ["All Models"],
-    safetyNotes: "",
-    image:
-      "https://images.unsplash.com/photo-1511110423706-9f5b6c1aa1a3?auto=format&fit=crop&w=700&q=80",
-  },
-  {
-    id: "part-5",
-    name: "Spark Plugs (Set of 4)",
-    brand: "NGK",
-    category: "Engine",
-    quantity: 12,
-    price: 48,
-    compatibleModels: [
-      "Honda CBR600RR",
-      "Yamaha R1",
-    ],
-    safetyNotes: "",
-    image:
-      "https://images.unsplash.com/photo-1600273142727-2d3dbab5e38e?auto=format&fit=crop&w=700&q=80",
-  },
-];
-
-const categories = [
-  "All",
-  "Lubricants",
-  "Brake System",
-  "Engine",
-];
-
-const brands = [
-  "All",
-  "Motul",
-  "Brembo",
-  "K&N",
-  "NGK",
-];
 
 export default function CustomerPartsCatalog() {
   const [searchTerm, setSearchTerm] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [brandFilter, setBrandFilter] = useState("All");
 
-  const [showFilterMenu, setShowFilterMenu] =
-    useState(false);
+  const [showFilterMenu, setShowFilterMenu] = useState(false);
 
-  const [selectedPart, setSelectedPart] =
-    useState(null);
+  const [selectedPart, setSelectedPart] = useState(null);
 
-  const [partToAdd, setPartToAdd] =
-    useState(null);
+  const [partToAdd, setPartToAdd] = useState(null);
 
   const [selectedBuild, setSelectedBuild] =
     useState("My Performance Build");
 
-  const [partsInBuild, setPartsInBuild] =
-    useState([]);
+  const [partsInBuild, setPartsInBuild] = useState([]);
 
-  const filteredParts = inventory.filter((part) => {
-    const search = searchTerm.toLowerCase();
+  const [inventory, setInventory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [firestoreError, setFirestoreError] = useState("");
 
-    const name = part.name.toLowerCase();
-    const brand = part.brand.toLowerCase();
-    const category = part.category.toLowerCase();
-
-    const matchesSearch =
-      name.indexOf(search) !== -1 ||
-      brand.indexOf(search) !== -1 ||
-      category.indexOf(search) !== -1;
-
-    const matchesCategory =
-      categoryFilter === "All" ||
-      part.category === categoryFilter;
-
-    const matchesBrand =
-      brandFilter === "All" ||
-      part.brand === brandFilter;
-
-    return (
-      matchesSearch &&
-      matchesCategory &&
-      matchesBrand
+  // =========================================================
+  // LOAD CUSTOMER-VISIBLE INVENTORY FROM FIRESTORE
+  // =========================================================
+  useEffect(() => {
+    const inventoryQuery = query(
+      collection(db, "inventory"),
+      where("visibleToCustomers", "==", true)
     );
-  });
 
+    const unsubscribe = onSnapshot(
+      inventoryQuery,
+      (snapshot) => {
+        const data = snapshot.docs.map((inventoryDoc) => {
+          const item = inventoryDoc.data();
+
+          return {
+            id: inventoryDoc.id,
+            name: item.name || "Unnamed Part",
+            brand: item.brand || "MPRSS",
+            category: item.category || "General",
+            quantity: Number(item.quantity || 0),
+            price: Number(item.price || 0),
+
+            compatibleModels: Array.isArray(
+              item.compatibleModels
+            )
+              ? item.compatibleModels
+              : ["All Models"],
+
+            safetyNotes: item.safetyNotes || "",
+
+            // AdminInventory currently does not save an image.
+            image: item.image || "",
+          };
+        });
+
+        setInventory(data);
+        setLoading(false);
+        setFirestoreError("");
+      },
+      (error) => {
+        console.error(
+          "CUSTOMER PARTS CATALOG FIRESTORE ERROR:",
+          error
+        );
+
+        setInventory([]);
+        setLoading(false);
+        setFirestoreError(error.message);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // =========================================================
+  // CATEGORY OPTIONS
+  // =========================================================
+  const categories = useMemo(() => {
+    return [
+      "All",
+      ...Array.from(
+        new Set(
+          inventory
+            .map((part) => part.category)
+            .filter(Boolean)
+        )
+      ),
+    ];
+  }, [inventory]);
+
+  // =========================================================
+  // BRAND OPTIONS
+  // =========================================================
+  const brands = useMemo(() => {
+    return [
+      "All",
+      ...Array.from(
+        new Set(
+          inventory
+            .map((part) => part.brand)
+            .filter(Boolean)
+        )
+      ),
+    ];
+  }, [inventory]);
+
+  // =========================================================
+  // FILTER PARTS
+  // =========================================================
+  const filteredParts = useMemo(() => {
+    return inventory.filter((part) => {
+      const search = searchTerm.toLowerCase();
+
+      const name = String(part.name || "").toLowerCase();
+      const brand = String(part.brand || "").toLowerCase();
+      const category = String(
+        part.category || ""
+      ).toLowerCase();
+
+      const matchesSearch =
+        name.includes(search) ||
+        brand.includes(search) ||
+        category.includes(search);
+
+      const matchesCategory =
+        categoryFilter === "All" ||
+        part.category === categoryFilter;
+
+      const matchesBrand =
+        brandFilter === "All" ||
+        part.brand === brandFilter;
+
+      return (
+        matchesSearch &&
+        matchesCategory &&
+        matchesBrand
+      );
+    });
+  }, [
+    inventory,
+    searchTerm,
+    categoryFilter,
+    brandFilter,
+  ]);
+
+  // =========================================================
+  // ADD PART TO BUILD
+  // =========================================================
   const addPartToBuild = () => {
     if (!partToAdd) {
       return;
@@ -158,11 +185,24 @@ export default function CustomerPartsCatalog() {
         ...partsInBuild,
         partToAdd,
       ]);
+
+      Alert.alert(
+        "Part Added",
+        `${partToAdd.name} was added to ${selectedBuild}.`
+      );
+    } else {
+      Alert.alert(
+        "Already Added",
+        `${partToAdd.name} is already in this build.`
+      );
     }
 
     setPartToAdd(null);
   };
 
+  // =========================================================
+  // CLEAR FILTERS
+  // =========================================================
   const clearFilters = () => {
     setSearchTerm("");
     setCategoryFilter("All");
@@ -204,7 +244,9 @@ export default function CustomerPartsCatalog() {
 
           <TouchableOpacity
             style={styles.filterButton}
-            onPress={() => setShowFilterMenu(true)}
+            onPress={() =>
+              setShowFilterMenu(true)
+            }
           >
             <Text style={styles.filterButtonText}>
               ⚙ Filters
@@ -245,169 +287,250 @@ export default function CustomerPartsCatalog() {
           )}
         </View>
 
-        {/* RESULTS */}
-        <View style={styles.resultsHeader}>
-          <Text style={styles.resultsTitle}>
-            Available Parts
-          </Text>
+        {/* FIRESTORE ERROR */}
+        {firestoreError !== "" && (
+          <View style={styles.errorCard}>
+            <Text style={styles.errorTitle}>
+              Unable to load parts
+            </Text>
 
-          <Text style={styles.resultsCount}>
-            {filteredParts.length} parts found
-          </Text>
-        </View>
+            <Text style={styles.errorText}>
+              Please try again later.
+            </Text>
+          </View>
+        )}
 
-        {filteredParts.length === 0 ? (
+        {/* LOADING */}
+        {loading ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyIcon}>
               🔧
             </Text>
 
             <Text style={styles.emptyTitle}>
-              No parts found
+              Loading parts...
             </Text>
 
             <Text style={styles.emptyText}>
-              Try changing your search or filters.
+              Getting the latest parts from the
+              inventory.
             </Text>
-
-            <TouchableOpacity
-              style={styles.clearButton}
-              onPress={clearFilters}
-            >
-              <Text
-                style={styles.clearButtonText}
-              >
-                Clear Search
-              </Text>
-            </TouchableOpacity>
           </View>
         ) : (
-          filteredParts.map((part) => {
-            const isLowStock =
-              part.quantity <= 10;
+          <>
+            {/* RESULTS */}
+            <View style={styles.resultsHeader}>
+              <Text style={styles.resultsTitle}>
+                Available Parts
+              </Text>
 
-            return (
-              <View
-                key={part.id}
-                style={styles.partCard}
-              >
-                <Image
-                  source={{ uri: part.image }}
-                  style={styles.partImage}
-                />
+              <Text style={styles.resultsCount}>
+                {filteredParts.length} parts found
+              </Text>
+            </View>
 
-                <View style={styles.partContent}>
-                  <Text style={styles.partBrand}>
-                    {part.brand}
-                  </Text>
+            {filteredParts.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Text style={styles.emptyIcon}>
+                  🔧
+                </Text>
 
-                  <Text style={styles.partName}>
-                    {part.name}
-                  </Text>
+                <Text style={styles.emptyTitle}>
+                  No parts found
+                </Text>
 
-                  <Text style={styles.partCategory}>
-                    {part.category}
-                  </Text>
+                <Text style={styles.emptyText}>
+                  Try changing your search or
+                  filters.
+                </Text>
 
-                  <View
-                    style={[
-                      styles.stockBadge,
-                      isLowStock &&
-                        styles.lowStockBadge,
-                    ]}
+                <TouchableOpacity
+                  style={styles.clearButton}
+                  onPress={clearFilters}
+                >
+                  <Text
+                    style={styles.clearButtonText}
                   >
-                    <Text
-                      style={[
-                        styles.stockText,
-                        isLowStock &&
-                          styles.lowStockText,
-                      ]}
-                    >
-                      {part.quantity > 0
-                        ? `In Stock: ${part.quantity}`
-                        : "Out of Stock"}
-                    </Text>
-                  </View>
-
-                  <Text style={styles.partPrice}>
-                    ₱{part.price}
+                    Clear Search
                   </Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              filteredParts.map((part) => {
+                const isLowStock =
+                  part.quantity <= 10;
 
+                return (
                   <View
-                    style={styles.compatibilityBox}
+                    key={part.id}
+                    style={styles.partCard}
                   >
-                    <Text
-                      style={
-                        styles.compatibilityLabel
-                      }
-                    >
-                      Compatible With
-                    </Text>
-
-                    <Text
-                      style={
-                        styles.compatibilityText
-                      }
-                    >
-                      {part.compatibleModels.join(
-                        ", "
-                      )}
-                    </Text>
-                  </View>
-
-                  {part.safetyNotes !== "" && (
-                    <View
-                      style={styles.safetyBox}
-                    >
-                      <Text
-                        style={styles.safetyTitle}
+                    {part.image ? (
+                      <Image
+                        source={{
+                          uri: part.image,
+                        }}
+                        style={styles.partImage}
+                      />
+                    ) : (
+                      <View
+                        style={styles.partImagePlaceholder}
                       >
-                        ⚠ Safety Note
+                        <Text
+                          style={
+                            styles.placeholderIcon
+                          }
+                        >
+                          🔧
+                        </Text>
+
+                        <Text
+                          style={
+                            styles.placeholderText
+                          }
+                        >
+                          {part.category}
+                        </Text>
+                      </View>
+                    )}
+
+                    <View style={styles.partContent}>
+                      <Text style={styles.partBrand}>
+                        {part.brand}
+                      </Text>
+
+                      <Text style={styles.partName}>
+                        {part.name}
                       </Text>
 
                       <Text
-                        style={styles.safetyText}
+                        style={styles.partCategory}
                       >
-                        {part.safetyNotes}
+                        {part.category}
                       </Text>
-                    </View>
-                  )}
 
-                  <View style={styles.actionRow}>
-                    <TouchableOpacity
-                      style={
-                        styles.detailsButton
-                      }
-                      onPress={() =>
-                        setSelectedPart(part)
-                      }
-                    >
+                      <View
+                        style={[
+                          styles.stockBadge,
+                          isLowStock &&
+                            styles.lowStockBadge,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.stockText,
+                            isLowStock &&
+                              styles.lowStockText,
+                          ]}
+                        >
+                          {part.quantity > 0
+                            ? `In Stock: ${part.quantity}`
+                            : "Out of Stock"}
+                        </Text>
+                      </View>
+
                       <Text
+                        style={styles.partPrice}
+                      >
+                        ₱
+                        {part.price.toLocaleString()}
+                      </Text>
+
+                      <View
                         style={
-                          styles.detailsButtonText
+                          styles.compatibilityBox
                         }
                       >
-                        View Details
-                      </Text>
-                    </TouchableOpacity>
+                        <Text
+                          style={
+                            styles.compatibilityLabel
+                          }
+                        >
+                          Compatible With
+                        </Text>
 
-                    <TouchableOpacity
-                      style={styles.addButton}
-                      onPress={() =>
-                        setPartToAdd(part)
-                      }
-                    >
-                      <Text
-                        style={styles.addButtonText}
+                        <Text
+                          style={
+                            styles.compatibilityText
+                          }
+                        >
+                          {part.compatibleModels.join(
+                            ", "
+                          )}
+                        </Text>
+                      </View>
+
+                      {part.safetyNotes !==
+                        "" && (
+                        <View
+                          style={styles.safetyBox}
+                        >
+                          <Text
+                            style={
+                              styles.safetyTitle
+                            }
+                          >
+                            ⚠ Safety Note
+                          </Text>
+
+                          <Text
+                            style={
+                              styles.safetyText
+                            }
+                          >
+                            {part.safetyNotes}
+                          </Text>
+                        </View>
+                      )}
+
+                      <View
+                        style={styles.actionRow}
                       >
-                        + Add
-                      </Text>
-                    </TouchableOpacity>
+                        <TouchableOpacity
+                          style={
+                            styles.detailsButton
+                          }
+                          onPress={() =>
+                            setSelectedPart(part)
+                          }
+                        >
+                          <Text
+                            style={
+                              styles.detailsButtonText
+                            }
+                          >
+                            View Details
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={[
+                            styles.addButton,
+                            part.quantity <= 0 &&
+                              styles.disabledButton,
+                          ]}
+                          disabled={
+                            part.quantity <= 0
+                          }
+                          onPress={() =>
+                            setPartToAdd(part)
+                          }
+                        >
+                          <Text
+                            style={
+                              styles.addButtonText
+                            }
+                          >
+                            + Add
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
                   </View>
-                </View>
-              </View>
-            );
-          })
+                );
+              })
+            )}
+          </>
         )}
 
         {/* CURRENT BUILD */}
@@ -569,20 +692,50 @@ export default function CustomerPartsCatalog() {
 
             {selectedPart && (
               <ScrollView
-                showsVerticalScrollIndicator={false}
+                showsVerticalScrollIndicator={
+                  false
+                }
               >
-                <Image
-                  source={{
-                    uri: selectedPart.image,
-                  }}
-                  style={styles.detailsImage}
-                />
+                {selectedPart.image ? (
+                  <Image
+                    source={{
+                      uri: selectedPart.image,
+                    }}
+                    style={styles.detailsImage}
+                  />
+                ) : (
+                  <View
+                    style={
+                      styles.detailsImagePlaceholder
+                    }
+                  >
+                    <Text
+                      style={
+                        styles.detailsPlaceholderIcon
+                      }
+                    >
+                      🔧
+                    </Text>
 
-                <Text style={styles.detailsBrand}>
+                    <Text
+                      style={
+                        styles.detailsPlaceholderText
+                      }
+                    >
+                      {selectedPart.category}
+                    </Text>
+                  </View>
+                )}
+
+                <Text
+                  style={styles.detailsBrand}
+                >
                   {selectedPart.brand}
                 </Text>
 
-                <Text style={styles.detailsName}>
+                <Text
+                  style={styles.detailsName}
+                >
                   {selectedPart.name}
                 </Text>
 
@@ -592,8 +745,11 @@ export default function CustomerPartsCatalog() {
                   {selectedPart.category}
                 </Text>
 
-                <Text style={styles.detailsPrice}>
-                  ₱{selectedPart.price}
+                <Text
+                  style={styles.detailsPrice}
+                >
+                  ₱
+                  {selectedPart.price.toLocaleString()}
                 </Text>
 
                 <View
@@ -655,7 +811,15 @@ export default function CustomerPartsCatalog() {
                 )}
 
                 <TouchableOpacity
-                  style={styles.fullButton}
+                  style={[
+                    styles.fullButton,
+                    selectedPart.quantity <=
+                      0 &&
+                      styles.disabledButton,
+                  ]}
+                  disabled={
+                    selectedPart.quantity <= 0
+                  }
                   onPress={() => {
                     setPartToAdd(selectedPart);
                     setSelectedPart(null);
@@ -666,7 +830,9 @@ export default function CustomerPartsCatalog() {
                       styles.fullButtonText
                     }
                   >
-                    Add to Custom Build
+                    {selectedPart.quantity > 0
+                      ? "Add to Custom Build"
+                      : "Out of Stock"}
                   </Text>
                 </TouchableOpacity>
               </ScrollView>
@@ -709,14 +875,21 @@ export default function CustomerPartsCatalog() {
                 </Text>
 
                 <Text
-                  style={styles.addPartDescription}
+                  style={
+                    styles.addPartDescription
+                  }
                 >
                   Choose the build where you want
                   to add this part.
                 </Text>
 
                 <TouchableOpacity
-                  style={styles.buildOption}
+                  style={[
+                    styles.buildOption,
+                    selectedBuild ===
+                      "My Performance Build" &&
+                      styles.buildOptionActive,
+                  ]}
                   onPress={() =>
                     setSelectedBuild(
                       "My Performance Build"
@@ -724,16 +897,24 @@ export default function CustomerPartsCatalog() {
                   }
                 >
                   <Text
-                    style={
-                      styles.buildOptionText
-                    }
+                    style={[
+                      styles.buildOptionText,
+                      selectedBuild ===
+                        "My Performance Build" &&
+                        styles.buildOptionTextActive,
+                    ]}
                   >
                     My Performance Build
                   </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={styles.buildOption}
+                  style={[
+                    styles.buildOption,
+                    selectedBuild ===
+                      "Daily Ride Setup" &&
+                      styles.buildOptionActive,
+                  ]}
                   onPress={() =>
                     setSelectedBuild(
                       "Daily Ride Setup"
@@ -741,9 +922,12 @@ export default function CustomerPartsCatalog() {
                   }
                 >
                   <Text
-                    style={
-                      styles.buildOptionText
-                    }
+                    style={[
+                      styles.buildOptionText,
+                      selectedBuild ===
+                        "Daily Ride Setup" &&
+                        styles.buildOptionTextActive,
+                    ]}
                   >
                     Daily Ride Setup
                   </Text>
@@ -901,6 +1085,25 @@ const styles = StyleSheet.create({
     backgroundColor: "#f3f4f6",
   },
 
+  partImagePlaceholder: {
+    width: "100%",
+    height: 180,
+    backgroundColor: "#f3f4f6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  placeholderIcon: {
+    fontSize: 42,
+  },
+
+  placeholderText: {
+    marginTop: 8,
+    fontSize: 13,
+    color: "#9ca3af",
+    fontWeight: "700",
+  },
+
   partContent: {
     padding: 15,
   },
@@ -1028,6 +1231,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
+  disabledButton: {
+    backgroundColor: "#9ca3af",
+  },
+
   addButtonText: {
     color: "#ffffff",
     fontSize: 13,
@@ -1073,6 +1280,27 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 13,
     fontWeight: "700",
+  },
+
+  errorCard: {
+    backgroundColor: "#fef2f2",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    padding: 14,
+    marginBottom: 16,
+  },
+
+  errorTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#b91c1c",
+  },
+
+  errorText: {
+    marginTop: 4,
+    fontSize: 12,
+    color: "#991b1b",
   },
 
   buildSummary: {
@@ -1212,6 +1440,27 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
 
+  detailsImagePlaceholder: {
+    width: "100%",
+    height: 210,
+    borderRadius: 14,
+    marginBottom: 15,
+    backgroundColor: "#f3f4f6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  detailsPlaceholderIcon: {
+    fontSize: 48,
+  },
+
+  detailsPlaceholderText: {
+    marginTop: 8,
+    fontSize: 13,
+    color: "#9ca3af",
+    fontWeight: "700",
+  },
+
   detailsBrand: {
     fontSize: 11,
     fontWeight: "800",
@@ -1315,10 +1564,19 @@ const styles = StyleSheet.create({
     borderColor: "#d1d5db",
   },
 
+  buildOptionActive: {
+    backgroundColor: "#111827",
+    borderColor: "#111827",
+  },
+
   buildOptionText: {
     fontSize: 14,
     fontWeight: "700",
     color: "#111827",
+  },
+
+  buildOptionTextActive: {
+    color: "#ffffff",
   },
 
   confirmButton: {

@@ -1,84 +1,62 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
+
+import { onAuthStateChanged } from "firebase/auth";
+
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  increment,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
+
+import { auth, db } from "../firebase";
 
 import CustomerLayout from "../components/CustomerLayout";
 
-const conversations = [
+const RECIPIENTS = [
   {
-    id: "admin-1",
+    id: "admin",
     name: "MPRSS Admin",
     role: "Service Shop",
-    preview:
-      "Your service request has been received.",
-    time: "10:32 AM",
-    unread: 2,
-    online: true,
   },
   {
-    id: "admin-2",
-    name: "Service Coordinator",
-    role: "MPRSS Staff",
-    preview:
-      "Your motorcycle is ready for pickup.",
-    time: "Yesterday",
-    unread: 0,
-    online: false,
-  },
-];
-
-const initialMessages = [
-  {
-    id: "msg-1",
-    sender: "admin",
-    message:
-      "Hello Carlos! Welcome to MPRSS. How can we help you today?",
-    time: "10:21 AM",
-  },
-  {
-    id: "msg-2",
-    sender: "customer",
-    message:
-      "Hi! I would like to ask about my service request.",
-    time: "10:24 AM",
-  },
-  {
-    id: "msg-3",
-    sender: "admin",
-    message:
-      "Sure. Your request is currently under review by our service team.",
-    time: "10:26 AM",
-  },
-  {
-    id: "msg-4",
-    sender: "customer",
-    message:
-      "Okay, thank you. Please let me know once it is approved.",
-    time: "10:30 AM",
-  },
-  {
-    id: "msg-5",
-    sender: "admin",
-    message:
-      "Your service request has been received. We will update you once it has been reviewed.",
-    time: "10:32 AM",
+    id: "super_admin",
+    name: "MPRSS Super Admin",
+    role: "Management",
   },
 ];
 
 export default function CustomerMessages() {
+  const [currentUser, setCurrentUser] = useState(null);
+
+  const [customerName, setCustomerName] =
+    useState("MPRSS Rider");
+
+  const [conversations, setConversations] =
+    useState([]);
+
   const [selectedConversation, setSelectedConversation] =
-    useState(conversations[0]);
+    useState(null);
 
   const [messages, setMessages] =
-    useState(initialMessages);
+    useState([]);
 
   const [messageText, setMessageText] =
     useState("");
@@ -86,47 +64,571 @@ export default function CustomerMessages() {
   const [searchText, setSearchText] =
     useState("");
 
-  const sendMessage = () => {
-    const trimmedMessage = messageText.trim();
+  const [loading, setLoading] =
+    useState(true);
 
-    if (!trimmedMessage) {
+  const [sending, setSending] =
+    useState(false);
+
+  /*
+   * ==========================================
+   * AUTHENTICATION
+   * ==========================================
+   */
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      async (user) => {
+        setCurrentUser(user);
+
+        if (!user) {
+          setCustomerName("MPRSS Rider");
+          setConversations([]);
+          setSelectedConversation(null);
+          setMessages([]);
+          setLoading(false);
+          return;
+        }
+
+        try {
+          const customerRef = doc(
+            db,
+            "customers",
+            user.uid
+          );
+
+          const customerSnapshot =
+            await getDoc(customerRef);
+
+          if (customerSnapshot.exists()) {
+            const data =
+              customerSnapshot.data();
+
+            setCustomerName(
+              data.fullName ||
+                user.displayName ||
+                user.email ||
+                "MPRSS Rider"
+            );
+          } else {
+            setCustomerName(
+              user.displayName ||
+                user.email ||
+                "MPRSS Rider"
+            );
+          }
+        } catch (error) {
+          console.error(
+            "Error loading customer profile:",
+            error
+          );
+
+          setCustomerName(
+            user.displayName ||
+              user.email ||
+              "MPRSS Rider"
+          );
+        }
+
+        setLoading(false);
+      }
+    );
+
+    return unsubscribe;
+  }, []);
+
+  /*
+   * ==========================================
+   * CREATE / LOAD BOTH CONVERSATIONS
+   * ==========================================
+   *
+   * Each customer gets:
+   *
+   * conversations/{customerUid}_admin
+   * conversations/{customerUid}_super_admin
+   *
+   */
+
+  useEffect(() => {
+    if (!currentUser) {
       return;
     }
 
-    const newMessage = {
-      id: `msg-${Date.now()}`,
-      sender: "customer",
-      message: trimmedMessage,
-      time: getCurrentTime(),
+    let cancelled = false;
+
+    const setupConversations = async () => {
+      try {
+        const loadedConversations = [];
+
+        for (const recipient of RECIPIENTS) {
+          const conversationId =
+            `${currentUser.uid}_${recipient.id}`;
+
+          const conversationRef = doc(
+            db,
+            "conversations",
+            conversationId
+          );
+
+          const snapshot =
+            await getDoc(conversationRef);
+
+          if (!snapshot.exists()) {
+            await setDoc(conversationRef, {
+              customerId: currentUser.uid,
+              customerUid: currentUser.uid,
+              customerEmail:
+                currentUser.email || "",
+              customerName:
+                customerName ||
+                currentUser.displayName ||
+                currentUser.email ||
+                "MPRSS Rider",
+
+              recipientId: recipient.id,
+              recipientRole: recipient.id,
+              recipientName: recipient.name,
+
+              lastMessage: "",
+              lastMessageAt: null,
+
+              unreadForCustomer: 0,
+              unreadForRecipient: 0,
+
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+
+            loadedConversations.push({
+              id: conversationId,
+              customerId: currentUser.uid,
+              customerUid: currentUser.uid,
+              customerEmail:
+                currentUser.email || "",
+              customerName:
+                customerName || "MPRSS Rider",
+
+              recipientId: recipient.id,
+              recipientRole: recipient.id,
+              recipientName: recipient.name,
+
+              lastMessage: "",
+              lastMessageAt: null,
+
+              unreadForCustomer: 0,
+              unreadForRecipient: 0,
+
+              role: recipient.role,
+              online: false,
+            });
+          } else {
+            const data = snapshot.data();
+
+            loadedConversations.push({
+              id: snapshot.id,
+              ...data,
+              role: recipient.role,
+              online: data.online || false,
+            });
+          }
+        }
+
+        if (!cancelled) {
+          setConversations(
+            loadedConversations
+          );
+
+          setSelectedConversation(
+            (previous) => {
+              if (!previous) {
+                return loadedConversations[0] || null;
+              }
+
+              return (
+                loadedConversations.find(
+                  (item) =>
+                    item.id === previous.id
+                ) ||
+                loadedConversations[0] ||
+                null
+              );
+            }
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Error setting up conversations:",
+          error
+        );
+      }
     };
 
-    setMessages((previousMessages) => [
-      ...previousMessages,
-      newMessage,
-    ]);
+    setupConversations();
 
-    setMessageText("");
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser, customerName]);
+
+  /*
+   * ==========================================
+   * REAL-TIME CONVERSATION LISTENER
+   * ==========================================
+   */
+
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
+
+    const unsubscribers =
+      RECIPIENTS.map((recipient) => {
+        const conversationId =
+          `${currentUser.uid}_${recipient.id}`;
+
+        const conversationRef = doc(
+          db,
+          "conversations",
+          conversationId
+        );
+
+        return onSnapshot(
+          conversationRef,
+          (snapshot) => {
+            if (!snapshot.exists()) {
+              return;
+            }
+
+            const data = snapshot.data();
+
+            const updatedConversation = {
+              id: snapshot.id,
+              ...data,
+              role: recipient.role,
+              online: data.online || false,
+            };
+
+            setConversations((previous) => {
+              const exists = previous.some(
+                (item) =>
+                  item.id === snapshot.id
+              );
+
+              if (!exists) {
+                return [
+                  ...previous,
+                  updatedConversation,
+                ];
+              }
+
+              return previous.map((item) =>
+                item.id === snapshot.id
+                  ? updatedConversation
+                  : item
+              );
+            });
+          },
+          (error) => {
+            console.error(
+              `Conversation listener error (${recipient.id}):`,
+              error
+            );
+          }
+        );
+      });
+
+    return () => {
+      unsubscribers.forEach(
+        (unsubscribe) => unsubscribe()
+      );
+    };
+  }, [currentUser]);
+
+  /*
+   * ==========================================
+   * REAL-TIME MESSAGE LISTENER
+   * ==========================================
+   */
+
+  useEffect(() => {
+    if (
+      !currentUser ||
+      !selectedConversation
+    ) {
+      setMessages([]);
+      return;
+    }
+
+    const messagesRef = collection(
+      db,
+      "conversations",
+      selectedConversation.id,
+      "messages"
+    );
+
+    const messagesQuery = query(
+      messagesRef,
+      orderBy("createdAt", "asc")
+    );
+
+    const unsubscribe = onSnapshot(
+      messagesQuery,
+      (snapshot) => {
+        const loadedMessages =
+          snapshot.docs.map((messageDoc) => ({
+            id: messageDoc.id,
+            ...messageDoc.data(),
+          }));
+
+        setMessages(loadedMessages);
+      },
+      (error) => {
+        console.error(
+          "Messages listener error:",
+          error
+        );
+      }
+    );
+
+    return unsubscribe;
+  }, [
+    currentUser,
+    selectedConversation?.id,
+  ]);
+
+  /*
+   * ==========================================
+   * MARK SELECTED CONVERSATION AS READ
+   * ==========================================
+   */
+
+  useEffect(() => {
+    if (
+      !currentUser ||
+      !selectedConversation
+    ) {
+      return;
+    }
+
+    if (
+      Number(
+        selectedConversation.unreadForCustomer ||
+          0
+      ) > 0
+    ) {
+      const conversationRef = doc(
+        db,
+        "conversations",
+        selectedConversation.id
+      );
+
+      updateDoc(conversationRef, {
+        unreadForCustomer: 0,
+        updatedAt: serverTimestamp(),
+      }).catch((error) => {
+        console.error(
+          "Error marking conversation as read:",
+          error
+        );
+      });
+    }
+  }, [
+    currentUser,
+    selectedConversation?.id,
+    selectedConversation?.unreadForCustomer,
+  ]);
+
+  /*
+   * ==========================================
+   * SELECT CONVERSATION
+   * ==========================================
+   */
+
+  const handleSelectConversation = (
+    conversation
+  ) => {
+    setSelectedConversation(conversation);
+    setMessages([]);
   };
 
-  const filteredConversations =
-    conversations.filter((conversation) => {
-      const search = searchText
-        .toLowerCase()
-        .trim();
+  /*
+   * ==========================================
+   * SEND MESSAGE
+   * ==========================================
+   */
 
-      if (!search) {
-        return true;
+  const sendMessage = async () => {
+    const trimmedMessage =
+      messageText.trim();
+
+    if (
+      !trimmedMessage ||
+      !currentUser ||
+      !selectedConversation ||
+      sending
+    ) {
+      return;
+    }
+
+    setSending(true);
+
+    try {
+      const conversationRef = doc(
+        db,
+        "conversations",
+        selectedConversation.id
+      );
+
+      const messagesRef = collection(
+        conversationRef,
+        "messages"
+      );
+
+      await addDoc(messagesRef, {
+        senderId: currentUser.uid,
+        senderRole: "customer",
+        senderName:
+          customerName || "MPRSS Rider",
+        message: trimmedMessage,
+        createdAt: serverTimestamp(),
+      });
+
+      await updateDoc(
+        conversationRef,
+        {
+          customerId: currentUser.uid,
+          customerUid: currentUser.uid,
+          customerEmail:
+            currentUser.email || "",
+          customerName:
+            customerName || "MPRSS Rider",
+
+          lastMessage: trimmedMessage,
+          lastMessageAt:
+            serverTimestamp(),
+
+          /*
+           * Increase unread count for the
+           * selected recipient.
+           */
+          unreadForRecipient:
+            increment(1),
+
+          /*
+           * Customer has already read
+           * this conversation.
+           */
+          unreadForCustomer: 0,
+
+          updatedAt: serverTimestamp(),
+        }
+      );
+
+      setMessageText("");
+    } catch (error) {
+      console.error(
+        "Error sending message:",
+        error
+      );
+    } finally {
+      setSending(false);
+    }
+  };
+
+  /*
+   * ==========================================
+   * FORMAT TIME
+   * ==========================================
+   */
+
+  const formatMessageTime = (item) => {
+    if (!item?.createdAt) {
+      return "";
+    }
+
+    try {
+      const date =
+        typeof item.createdAt.toDate ===
+        "function"
+          ? item.createdAt.toDate()
+          : new Date(item.createdAt);
+
+      if (
+        Number.isNaN(date.getTime())
+      ) {
+        return "";
       }
 
-      return (
-        conversation.name
-          .toLowerCase()
-          .indexOf(search) !== -1 ||
-        conversation.preview
-          .toLowerCase()
-          .indexOf(search) !== -1
+      return date.toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    } catch {
+      return "";
+    }
+  };
+
+  /*
+   * ==========================================
+   * SEARCH
+   * ==========================================
+   */
+
+  const filteredConversations =
+    useMemo(() => {
+      const search =
+        searchText.toLowerCase().trim();
+
+      if (!search) {
+        return conversations;
+      }
+
+      return conversations.filter(
+        (conversation) =>
+          (
+            conversation.recipientName ||
+            ""
+          )
+            .toLowerCase()
+            .includes(search) ||
+          (
+            conversation.lastMessage ||
+            ""
+          )
+            .toLowerCase()
+            .includes(search)
       );
-    });
+    }, [
+      conversations,
+      searchText,
+    ]);
+
+  /*
+   * ==========================================
+   * CURRENT CHAT
+   * ==========================================
+   */
+
+  const conversationName =
+    selectedConversation?.recipientName ||
+    "MPRSS Admin";
+
+  const conversationRole =
+    selectedConversation?.role ||
+    "Service Shop";
+
+  const adminOnline =
+    selectedConversation?.online === true;
+
+  const totalUnread = conversations.reduce(
+    (total, conversation) =>
+      total +
+      Number(
+        conversation.unreadForCustomer || 0
+      ),
+    0
+  );
 
   return (
     <CustomerLayout title="Messages">
@@ -139,18 +641,29 @@ export default function CustomerMessages() {
         }
       >
         <View style={styles.content}>
-          {/* CONVERSATIONS */}
+          {/* ================================
+              CONVERSATION LIST
+              ================================ */}
+
           <View style={styles.conversationPanel}>
             <View style={styles.panelHeader}>
               <Text style={styles.panelTitle}>
                 Conversations
               </Text>
 
-              <View style={styles.unreadBadge}>
-                <Text style={styles.unreadBadgeText}>
-                  2
-                </Text>
-              </View>
+              {totalUnread > 0 && (
+                <View
+                  style={styles.unreadBadge}
+                >
+                  <Text
+                    style={
+                      styles.unreadBadgeText
+                    }
+                  >
+                    {totalUnread}
+                  </Text>
+                </View>
+              )}
             </View>
 
             <TextInput
@@ -162,13 +675,27 @@ export default function CustomerMessages() {
             />
 
             <ScrollView
-              showsVerticalScrollIndicator={false}
+              showsVerticalScrollIndicator={
+                false
+              }
               contentContainerStyle={
                 styles.conversationList
               }
             >
-              {filteredConversations.length ===
-              0 ? (
+              {loading ? (
+                <View
+                  style={styles.noConversation}
+                >
+                  <Text
+                    style={
+                      styles.noConversationText
+                    }
+                  >
+                    Loading conversations...
+                  </Text>
+                </View>
+              ) : filteredConversations.length ===
+                0 ? (
                 <View
                   style={styles.noConversation}
                 >
@@ -183,36 +710,42 @@ export default function CustomerMessages() {
               ) : (
                 filteredConversations.map(
                   (conversation) => {
-                    const selected =
-                      selectedConversation.id ===
+                    const isSelected =
+                      selectedConversation?.id ===
                       conversation.id;
+
+                    const unreadCount = Number(
+                      conversation.unreadForCustomer ||
+                        0
+                    );
 
                     return (
                       <TouchableOpacity
                         key={conversation.id}
                         style={[
                           styles.conversationItem,
-                          selected &&
+                          isSelected &&
                             styles.conversationItemSelected,
                         ]}
                         onPress={() =>
-                          setSelectedConversation(
+                          handleSelectConversation(
                             conversation
                           )
                         }
                         activeOpacity={0.8}
                       >
                         <View
-                          style={
-                            styles.avatar
-                          }
+                          style={styles.avatar}
                         >
                           <Text
                             style={
                               styles.avatarText
                             }
                           >
-                            MA
+                            {conversation.recipientId ===
+                            "super_admin"
+                              ? "SA"
+                              : "MA"}
                           </Text>
 
                           {conversation.online && (
@@ -240,7 +773,9 @@ export default function CustomerMessages() {
                               }
                               numberOfLines={1}
                             >
-                              {conversation.name}
+                              {
+                                conversation.recipientName
+                              }
                             </Text>
 
                             <Text
@@ -248,7 +783,12 @@ export default function CustomerMessages() {
                                 styles.conversationTime
                               }
                             >
-                              {conversation.time}
+                              {formatMessageTime(
+                                {
+                                  createdAt:
+                                    conversation.lastMessageAt,
+                                }
+                              )}
                             </Text>
                           </View>
 
@@ -266,12 +806,12 @@ export default function CustomerMessages() {
                             }
                             numberOfLines={1}
                           >
-                            {conversation.preview}
+                            {conversation.lastMessage ||
+                              "Start a conversation"}
                           </Text>
                         </View>
 
-                        {conversation.unread >
-                          0 && (
+                        {unreadCount > 0 && (
                           <View
                             style={
                               styles.unreadDot
@@ -282,7 +822,7 @@ export default function CustomerMessages() {
                                 styles.unreadDotText
                               }
                             >
-                              {conversation.unread}
+                              {unreadCount}
                             </Text>
                           </View>
                         )}
@@ -294,45 +834,63 @@ export default function CustomerMessages() {
             </ScrollView>
           </View>
 
-          {/* CHAT */}
+          {/* ================================
+              CHAT
+              ================================ */}
+
           <View style={styles.chatPanel}>
             <View style={styles.chatHeader}>
               <View
-                style={styles.chatHeaderAvatar}
+                style={
+                  styles.chatHeaderAvatar
+                }
               >
                 <Text
                   style={
                     styles.chatHeaderAvatarText
                   }
                 >
-                  MA
+                  {selectedConversation?.recipientId ===
+                  "super_admin"
+                    ? "SA"
+                    : "MA"}
                 </Text>
 
-                {selectedConversation.online && (
+                {adminOnline && (
                   <View
-                    style={styles.chatOnlineDot}
+                    style={
+                      styles.chatOnlineDot
+                    }
                   />
                 )}
               </View>
 
               <View
-                style={styles.chatHeaderInfo}
+                style={
+                  styles.chatHeaderInfo
+                }
               >
                 <Text
-                  style={styles.chatHeaderName}
+                  style={
+                    styles.chatHeaderName
+                  }
                 >
-                  {selectedConversation.name}
+                  {conversationName}
                 </Text>
 
                 <Text
-                  style={styles.chatHeaderStatus}
+                  style={
+                    styles.chatHeaderStatus
+                  }
                 >
-                  {selectedConversation.online
+                  {adminOnline
                     ? "Online"
-                    : "Offline"}
+                    : conversationRole}
                 </Text>
               </View>
             </View>
+
+            {/* MESSAGES */}
 
             <ScrollView
               style={styles.messagesArea}
@@ -361,77 +919,106 @@ export default function CustomerMessages() {
                 />
               </View>
 
-              {messages.map((item) => {
-                const isCustomer =
-                  item.sender ===
-                  "customer";
-
-                return (
-                  <View
-                    key={item.id}
-                    style={[
-                      styles.messageRow,
-                      isCustomer &&
-                        styles.messageRowCustomer,
-                    ]}
+              {messages.length === 0 ? (
+                <View
+                  style={styles.emptyMessages}
+                >
+                  <Text
+                    style={
+                      styles.emptyMessagesTitle
+                    }
                   >
-                    {!isCustomer && (
-                      <View
-                        style={
-                          styles.smallAvatar
-                        }
-                      >
-                        <Text
-                          style={
-                            styles.smallAvatarText
-                          }
-                        >
-                          MA
-                        </Text>
-                      </View>
-                    )}
+                    Start a conversation
+                  </Text>
 
+                  <Text
+                    style={
+                      styles.emptyMessagesText
+                    }
+                  >
+                    Send a message to{" "}
+                    {conversationName}.
+                  </Text>
+                </View>
+              ) : (
+                messages.map((item) => {
+                  const isCustomer =
+                    item.senderRole ===
+                    "customer";
+
+                  return (
                     <View
+                      key={item.id}
                       style={[
-                        styles.messageBlock,
+                        styles.messageRow,
                         isCustomer &&
-                          styles.messageBlockCustomer,
+                          styles.messageRowCustomer,
                       ]}
                     >
+                      {!isCustomer && (
+                        <View
+                          style={
+                            styles.smallAvatar
+                          }
+                        >
+                          <Text
+                            style={
+                              styles.smallAvatarText
+                            }
+                          >
+                            {item.senderRole ===
+                            "super_admin"
+                              ? "SA"
+                              : "MA"}
+                          </Text>
+                        </View>
+                      )}
+
                       <View
                         style={[
-                          styles.messageBubble,
+                          styles.messageBlock,
                           isCustomer &&
-                            styles.customerBubble,
+                            styles.messageBlockCustomer,
                         ]}
                       >
-                        <Text
+                        <View
                           style={[
-                            styles.messageText,
+                            styles.messageBubble,
                             isCustomer &&
-                              styles.customerMessageText,
+                              styles.customerBubble,
                           ]}
                         >
-                          {item.message}
+                          <Text
+                            style={[
+                              styles.messageText,
+                              isCustomer &&
+                                styles.customerMessageText,
+                            ]}
+                          >
+                            {item.message}
+                          </Text>
+                        </View>
+
+                        <Text
+                          style={[
+                            styles.messageTime,
+                            isCustomer &&
+                              styles.customerMessageTime,
+                          ]}
+                        >
+                          {formatMessageTime(
+                            item
+                          )}
                         </Text>
                       </View>
-
-                      <Text
-                        style={[
-                          styles.messageTime,
-                          isCustomer &&
-                            styles.customerMessageTime,
-                        ]}
-                      >
-                        {item.time}
-                      </Text>
                     </View>
-                  </View>
-                );
-              })}
+                  );
+                })
+              )}
             </ScrollView>
 
             {/* QUICK REPLIES */}
+
             <View
               style={styles.quickReplyArea}
             >
@@ -445,7 +1032,7 @@ export default function CustomerMessages() {
                 horizontal
                 showsHorizontalScrollIndicator={
                   false
-              }
+                }
               >
                 <TouchableOpacity
                   style={styles.quickReply}
@@ -501,32 +1088,50 @@ export default function CustomerMessages() {
             </View>
 
             {/* MESSAGE COMPOSER */}
+
             <View
               style={styles.composerArea}
             >
               <TextInput
                 value={messageText}
                 onChangeText={setMessageText}
-                placeholder="Type your message..."
+                placeholder={`Message ${conversationName}...`}
                 placeholderTextColor="#9ca3af"
                 multiline
                 style={styles.messageInput}
+                editable={
+                  !sending &&
+                  !!currentUser &&
+                  !!selectedConversation
+                }
               />
 
               <TouchableOpacity
                 style={[
                   styles.sendButton,
-                  !messageText.trim() &&
+                  (!messageText.trim() ||
+                    sending ||
+                    !currentUser ||
+                    !selectedConversation) &&
                     styles.sendButtonDisabled,
                 ]}
                 onPress={sendMessage}
-                disabled={!messageText.trim()}
+                disabled={
+                  !messageText.trim() ||
+                  sending ||
+                  !currentUser ||
+                  !selectedConversation
+                }
                 activeOpacity={0.85}
               >
                 <Text
-                  style={styles.sendButtonText}
+                  style={
+                    styles.sendButtonText
+                  }
                 >
-                  Send
+                  {sending
+                    ? "Sending..."
+                    : "Send"}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -535,15 +1140,6 @@ export default function CustomerMessages() {
       </KeyboardAvoidingView>
     </CustomerLayout>
   );
-}
-
-function getCurrentTime() {
-  const now = new Date();
-
-  return now.toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
 }
 
 const styles = StyleSheet.create({
@@ -558,6 +1154,7 @@ const styles = StyleSheet.create({
   },
 
   /* CONVERSATIONS */
+
   conversationPanel: {
     backgroundColor: "#ffffff",
     borderRadius: 16,
@@ -636,7 +1233,7 @@ const styles = StyleSheet.create({
 
   avatarText: {
     color: "#ffffff",
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "800",
   },
 
@@ -715,6 +1312,7 @@ const styles = StyleSheet.create({
   },
 
   /* CHAT */
+
   chatPanel: {
     flex: 1,
     backgroundColor: "#ffffff",
@@ -745,7 +1343,7 @@ const styles = StyleSheet.create({
 
   chatHeaderAvatarText: {
     color: "#ffffff",
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "800",
   },
 
@@ -774,7 +1372,7 @@ const styles = StyleSheet.create({
   chatHeaderStatus: {
     marginTop: 2,
     fontSize: 10,
-    color: "#22a55",
+    color: "#22c55e",
   },
 
   messagesArea: {
@@ -804,6 +1402,26 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: "#9ca3af",
     fontWeight: "700",
+  },
+
+  emptyMessages: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 45,
+    paddingHorizontal: 25,
+  },
+
+  emptyMessagesTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#374151",
+    marginBottom: 5,
+  },
+
+  emptyMessagesText: {
+    fontSize: 11,
+    color: "#9ca3af",
+    textAlign: "center",
   },
 
   messageRow: {
@@ -878,6 +1496,7 @@ const styles = StyleSheet.create({
   },
 
   /* QUICK REPLY */
+
   quickReplyArea: {
     paddingHorizontal: 12,
     paddingTop: 9,
@@ -910,6 +1529,7 @@ const styles = StyleSheet.create({
   },
 
   /* COMPOSER */
+
   composerArea: {
     flexDirection: "row",
     alignItems: "flex-end",

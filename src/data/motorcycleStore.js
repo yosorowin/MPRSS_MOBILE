@@ -13,6 +13,7 @@ export function addMotorcycle(motorcycle) {
   };
 
   motorcycles = [...motorcycles, newMotorcycle];
+
   notify();
 
   return newMotorcycle;
@@ -60,5 +61,5 @@ export function subscribeToMotorcycles(listener) {
 }
 
 function notify() {
-  listeners.forEach((listener) => listener());
+  listeners.forEach((listener) => listener(motorcycles));
 }

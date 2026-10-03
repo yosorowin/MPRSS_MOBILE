@@ -1,22 +1,29 @@
-import DateTimePicker from "@react-native-community/datetimepicker";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+import {
+  collection,
+  doc,
+  onSnapshot,
+  runTransaction,
+  serverTimestamp
+} from "firebase/firestore";
+
+import { onAuthStateChanged } from "firebase/auth";
+
+import { auth, db } from "../firebase";
+
 import {
   Modal,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 
 import CustomerLayout from "../components/CustomerLayout";
-import {
-  getMotorcycles,
-  subscribeToMotorcycles,
-} from "../data/motorcycleStore";
 import { setCurrentServiceRequest } from "../data/serviceRequestStore";
 
 export default function CustomerServices() {
@@ -25,9 +32,9 @@ export default function CustomerServices() {
   const [activeTab, setActiveTab] = useState("pending");
 
   const [showRequestForm, setShowRequestForm] = useState(false);
-  const [showConfirmModal, setShowConfirmModal] =
-    useState(false);
-    
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
 
   const [showMotorcycleDropdown, setShowMotorcycleDropdown] =
     useState(false);
@@ -38,37 +45,155 @@ export default function CustomerServices() {
   const [showTimeDropdown, setShowTimeDropdown] =
     useState(false);
 
-  const [showDatePicker, setShowDatePicker] =
-    useState(false);
-
-  const [showServicePicker, setShowServicePicker] =
-    useState(false);
-
-  const [showTimePicker, setShowTimePicker] =
-    useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
 
   const [motorcycles, setMotorcycles] = useState([]);
+  const [firestoreServices, setFirestoreServices] = useState([]);
+  const [schedules, setSchedules] = useState([]);
+
+  const [currentUser, setCurrentUser] = useState(null);
+
+  const [selectedService, setSelectedService] = useState(null);
+
+  const [calendarMonth, setCalendarMonth] = useState(
+    new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+  );
 
   const [requestData, setRequestData] = useState({
     motorcycle: "",
+    motorcycleId: "",
     serviceType: "",
     date: "",
     time: "",
     description: "",
   });
 
+  const [isSaving, setIsSaving] = useState(false);
+
+  /*
+   * ============================================================
+   * AUTH
+   * ============================================================
+   */
+
   useEffect(() => {
-    const updateMotorcycles = () => {
-      setMotorcycles(getMotorcycles());
-    };
-
-    updateMotorcycles();
-
-    const unsubscribe =
-      subscribeToMotorcycles(updateMotorcycles);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user || null);
+    });
 
     return unsubscribe;
   }, []);
+
+  /*
+   * ============================================================
+   * MOTORCYCLES
+   * ============================================================
+   */
+
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      setMotorcycles([]);
+      return undefined;
+    }
+
+    const unsubscribe = onSnapshot(
+      collection(db, "motorcycles"),
+      (snapshot) => {
+        const data = snapshot.docs
+          .map((item) => ({
+            id: item.id,
+            ...item.data(),
+          }))
+          .filter(
+            (motorcycle) =>
+              motorcycle.customerId === currentUser.uid ||
+              motorcycle.customerUid === currentUser.uid ||
+              motorcycle.userId === currentUser.uid
+          );
+
+        setMotorcycles(data);
+      },
+      (error) => {
+        console.error("Error loading motorcycles:", error);
+        setMotorcycles([]);
+      }
+    );
+
+    return unsubscribe;
+  }, [currentUser?.uid]);
+
+  /*
+   * ============================================================
+   * SERVICES
+   * ============================================================
+   */
+
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      setFirestoreServices([]);
+      return undefined;
+    }
+
+    const unsubscribe = onSnapshot(
+      collection(db, "services"),
+      (snapshot) => {
+        const services = snapshot.docs
+          .map((item) => ({
+            id: item.id,
+            ...item.data(),
+          }))
+          .filter(
+            (service) =>
+              service.customerId === currentUser.uid ||
+              service.customerUid === currentUser.uid ||
+              service.userId === currentUser.uid ||
+              service.userUid === currentUser.uid ||
+              String(service.customerEmail || "").toLowerCase() ===
+                String(currentUser.email || "").toLowerCase()
+          );
+
+        setFirestoreServices(services);
+      },
+      (error) => {
+        console.error("Error loading service requests:", error);
+        setFirestoreServices([]);
+      }
+    );
+
+    return unsubscribe;
+  }, [currentUser?.uid, currentUser?.email]);
+
+  /*
+   * ============================================================
+   * SCHEDULES
+   * ============================================================
+   */
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "schedules"),
+      (snapshot) => {
+        const data = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+
+        setSchedules(data);
+      },
+      (error) => {
+        console.error("Error loading schedules:", error);
+        setSchedules([]);
+      }
+    );
+
+    return unsubscribe;
+  }, []);
+
+  /*
+   * ============================================================
+   * OPTIONS
+   * ============================================================
+   */
 
   const serviceTypes = [
     "Complete PMS",
@@ -95,53 +220,283 @@ export default function CustomerServices() {
     "5:00 PM",
   ];
 
-  const pendingRequests = [
-    {
-      id: "req-1",
-      motorcycle: "Honda CBR600RR",
-      serviceType: "Engine Tune-up",
-      preferredDate: "2026-03-25",
-      preferredTime: "10:00 AM",
-      issueDescription:
-        "Engine making unusual noise at high RPM",
-      status: "Pending Approval",
-      paymentMethod: "GCash",
-      paymentStatus: "Awaiting Confirmation",
-      estimatedCost: 300,
-    },
-  ];
+  /*
+   * ============================================================
+   * HELPERS
+   * ============================================================
+   */
 
-  const activeServices = [
-    {
-      id: "srv-2",
-      motorcycle: "Honda CBR600RR",
-      serviceType: "Chain Adjustment",
-      requestDate: "2026-03-19",
-      assignedStaff: "Maria Santos",
-      estimatedCost: 80,
-      estimatedTime: "1 hour",
-      status: "Waiting for Parts",
-      notes: "Need to order new chain",
-      paymentMethod: "Cash",
-      paymentStatus: "Pending",
-    },
-  ];
+  const normalizeStatus = (value) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/_/g, " ")
+      .trim();
 
-  const completedServices = [
-    {
-      id: "srv-comp-1",
-      motorcycle: "Honda CBR600RR",
-      serviceType: "Tire Replacement",
-      completedDate: "2026-03-15",
-      cost: 450,
-      partsUsed: [
-        "Front Tire",
-        "Rear Tire",
-      ],
-      rating: 5,
-      feedback: "Excellent service!",
-    },
-  ];
+  const formatDate = (date) => {
+    const year = date.getFullYear();
+
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+
+    const day = String(date.getDate()).padStart(2, "0");
+
+    return `${year}-${month}-${day}`;
+  };
+
+  const parseDate = (value) => {
+    if (!value) {
+      return null;
+    }
+
+    const parts = String(value).split("-");
+
+    if (parts.length !== 3) {
+      return null;
+    }
+
+    return new Date(
+      Number(parts[0]),
+      Number(parts[1]) - 1,
+      Number(parts[2])
+    );
+  };
+
+  const getToday = () => {
+    const now = new Date();
+
+    return new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate()
+    );
+  };
+
+  const getSchedule = (date) => {
+    return (
+      schedules.find(
+        (schedule) =>
+          schedule.id === date ||
+          schedule.date === date
+      ) || null
+    );
+  };
+
+  const getScheduleCapacity = (schedule) => {
+    if (!schedule) {
+      return 5;
+    }
+
+    return Number(
+      schedule.capacity ??
+        schedule.dailyCapacity ??
+        schedule.maxCapacity ??
+        5
+    );
+  };
+
+  const getBookedCount = (schedule, time) => {
+    if (!schedule || !time) {
+      return 0;
+    }
+
+    const bookedSlots = schedule.bookedSlots || {};
+
+    return Number(bookedSlots[time] || 0);
+  };
+
+  const isTimeAvailable = (date, time, ignoredServiceId = null) => {
+    if (!date || !time) {
+      return false;
+    }
+
+    const schedule = getSchedule(date);
+
+    const capacity = getScheduleCapacity(schedule);
+
+    let bookedCount = getBookedCount(schedule, time);
+
+    /*
+     * If the schedule document is not yet created,
+     * the slot is treated as available using the
+     * default capacity.
+     */
+
+    const customerReservations = firestoreServices.filter(
+      (service) => {
+        if (ignoredServiceId && service.id === ignoredServiceId) {
+          return false;
+        }
+
+        const status = normalizeStatus(service.status);
+
+        if (
+          [
+            "rejected",
+            "cancelled",
+            "canceled",
+            "completed",
+          ].includes(status)
+        ) {
+          return false;
+        }
+
+        return (
+          service.preferredDate === date &&
+          service.preferredTime === time
+        );
+      }
+    );
+
+    /*
+     * Only count customer reservations that are not
+     * already represented by bookedSlots.
+     *
+     * This protects the system from double-counting
+     * older records.
+     */
+
+    bookedCount += customerReservations.filter(
+      (service) =>
+        service.scheduleReservationActive === true
+    ).length;
+
+    return bookedCount < capacity;
+  };
+
+  const getAvailableTimesForDate = (
+    date,
+    ignoredServiceId = null
+  ) => {
+    if (!date) {
+      return [];
+    }
+
+    return availableTimes.filter((time) =>
+      isTimeAvailable(
+        date,
+        time,
+        ignoredServiceId
+      )
+    );
+  };
+
+  const isDateAvailable = (
+    date,
+    ignoredServiceId = null
+  ) => {
+    if (!date) {
+      return false;
+    }
+
+    return (
+      getAvailableTimesForDate(
+        date,
+        ignoredServiceId
+      ).length > 0
+    );
+  };
+
+  const getMotorcycleLabel = (motorcycle) => {
+    if (!motorcycle) {
+      return "Motorcycle";
+    }
+
+    return (
+      `${motorcycle.brand || ""} ${
+        motorcycle.model || ""
+      }`.trim() ||
+      motorcycle.name ||
+      "Motorcycle"
+    );
+  };
+
+  /*
+   * ============================================================
+   * SERVICE LISTS
+   * ============================================================
+   */
+
+  const pendingRequests = useMemo(() => {
+    return firestoreServices.filter((service) => {
+      const status = normalizeStatus(service.status);
+
+      const approvalStatus = normalizeStatus(
+        service.approvalStatus
+      );
+
+      if (
+        [
+          "rejected",
+          "cancelled",
+          "canceled",
+          "completed",
+          "in progress",
+          "waiting for parts",
+          "quality check",
+        ].includes(status)
+      ) {
+        return false;
+      }
+
+      if (approvalStatus === "approved") {
+        return false;
+      }
+
+      return [
+        "pending",
+        "pending approval",
+        "for approval",
+        "awaiting approval",
+      ].includes(status);
+    });
+  }, [firestoreServices]);
+
+  const activeServices = useMemo(() => {
+    return firestoreServices.filter((service) => {
+      const status = normalizeStatus(service.status);
+
+      const approvalStatus = normalizeStatus(
+        service.approvalStatus
+      );
+
+      if (
+        [
+          "rejected",
+          "cancelled",
+          "canceled",
+          "completed",
+        ].includes(status)
+      ) {
+        return false;
+      }
+
+      if (
+        [
+          "in progress",
+          "waiting for parts",
+          "quality check",
+          "ready for pickup",
+          "active",
+          "approved",
+          "confirmed",
+        ].includes(status)
+      ) {
+        return true;
+      }
+
+      return (
+        approvalStatus === "approved" &&
+        status === "pending"
+      );
+    });
+  }, [firestoreServices]);
+
+  const completedServices = useMemo(() => {
+    return firestoreServices.filter(
+      (service) =>
+        normalizeStatus(service.status) ===
+        "completed"
+    );
+  }, [firestoreServices]);
 
   const tabs = [
     {
@@ -161,133 +516,1120 @@ export default function CustomerServices() {
     },
   ];
 
-  const motorcycleOptions =
-    motorcycles.length > 0
-      ? motorcycles.map((motorcycle) => ({
-          id: motorcycle.id,
-          label: `${motorcycle.brand} ${motorcycle.model}`,
-        }))
-      : [
-          {
-            id: "prototype-m1",
-            label: "Honda CBR600RR",
-          },
-        ];
+  const motorcycleOptions = motorcycles.map(
+    (motorcycle) => ({
+      id: motorcycle.id,
+      label: getMotorcycleLabel(motorcycle),
+    })
+  );
 
-  const openRequestForm = () => {
+  /*
+   * ============================================================
+   * FORM
+   * ============================================================
+   */
+
+  const resetRequestForm = () => {
     setRequestData({
       motorcycle: "",
+      motorcycleId: "",
       serviceType: "",
       date: "",
       time: "",
       description: "",
     });
 
+    setCalendarMonth(
+      new Date(
+        new Date().getFullYear(),
+        new Date().getMonth(),
+        1
+      )
+    );
+
     setShowMotorcycleDropdown(false);
     setShowServiceDropdown(false);
     setShowTimeDropdown(false);
-    setShowDatePicker(false);
-    setShowServicePicker(false);
-    setShowTimePicker(false);
+    setShowCalendar(false);
+  };
 
+  const openRequestForm = () => {
+    resetRequestForm();
+
+    setSelectedService(null);
+    setShowEditModal(false);
     setShowRequestForm(true);
   };
 
   const closeRequestForm = () => {
-    setShowRequestForm(false);
+    if (isSaving) {
+      return;
+    }
 
+    setShowRequestForm(false);
+    resetRequestForm();
+  };
+
+  const openEditRequest = (service) => {
+    const motorcycle = motorcycles.find(
+      (item) =>
+        item.id === service.motorcycleId
+    );
+
+    setSelectedService(service);
+
+    setRequestData({
+      motorcycle:
+        motorcycle
+          ? getMotorcycleLabel(motorcycle)
+          : service.motorcycle || "",
+      motorcycleId:
+        motorcycle?.id ||
+        service.motorcycleId ||
+        "",
+      serviceType:
+        service.serviceType || "",
+      date:
+        service.preferredDate ||
+        service.date ||
+        "",
+      time:
+        service.preferredTime ||
+        service.time ||
+        "",
+      description:
+        service.issueDescription ||
+        service.description ||
+        "",
+    });
+
+    const selectedDate = parseDate(
+      service.preferredDate ||
+        service.date
+    );
+
+    if (selectedDate) {
+      setCalendarMonth(
+        new Date(
+          selectedDate.getFullYear(),
+          selectedDate.getMonth(),
+          1
+        )
+      );
+    }
+
+    setShowEditModal(true);
+  };
+
+  /*
+   * ============================================================
+   * DROPDOWN CLOSE
+   * ============================================================
+   */
+
+  const closeAllDropdowns = () => {
     setShowMotorcycleDropdown(false);
     setShowServiceDropdown(false);
     setShowTimeDropdown(false);
-    setShowDatePicker(false);
-    setShowServicePicker(false);
-    setShowTimePicker(false);
+    setShowCalendar(false);
   };
 
-  const formatDate = (date) => {
-    const year = date.getFullYear();
+  /*
+   * ============================================================
+   * DATE CALENDAR
+   * ============================================================
+   */
 
-    const month = String(
-      date.getMonth() + 1
-    ).padStart(2, "0");
+  const calendarDays = useMemo(() => {
+    const year = calendarMonth.getFullYear();
+    const month = calendarMonth.getMonth();
 
-    const day = String(
-      date.getDate()
-    ).padStart(2, "0");
+    const firstDay = new Date(
+      year,
+      month,
+      1
+    ).getDay();
 
-    return `${year}-${month}-${day}`;
-  };
+    const daysInMonth = new Date(
+      year,
+      month + 1,
+      0
+    ).getDate();
 
-  const handleDateChange = (
-    event,
-    selectedDate
-  ) => {
-    if (Platform.OS === "android") {
-      setShowDatePicker(false);
+    const days = [];
+
+    for (let i = 0; i < firstDay; i++) {
+      days.push(null);
     }
 
-    if (selectedDate) {
-      setRequestData((previous) => ({
-        ...previous,
-        date: formatDate(selectedDate),
-      }));
+    for (let day = 1; day <= daysInMonth; day++) {
+      days.push(
+        new Date(year, month, day)
+      );
+    }
+
+    return days;
+  }, [calendarMonth]);
+
+  const monthLabel = calendarMonth.toLocaleDateString(
+    "en-US",
+    {
+      month: "long",
+      year: "numeric",
+    }
+  );
+
+  const previousMonth = () => {
+    const currentMonth = new Date(
+      calendarMonth.getFullYear(),
+      calendarMonth.getMonth(),
+      1
+    );
+
+    const minimumMonth = new Date(
+      getToday().getFullYear(),
+      getToday().getMonth(),
+      1
+    );
+
+    const previous = new Date(
+      currentMonth.getFullYear(),
+      currentMonth.getMonth() - 1,
+      1
+    );
+
+    if (previous >= minimumMonth) {
+      setCalendarMonth(previous);
     }
   };
 
-  const handleContinueRequest = () => {
+  const nextMonth = () => {
+    setCalendarMonth(
+      new Date(
+        calendarMonth.getFullYear(),
+        calendarMonth.getMonth() + 1,
+        1
+      )
+    );
+  };
+
+  const selectCalendarDate = (date) => {
+    if (!date) {
+      return;
+    }
+
+    const today = getToday();
+
+    if (date < today) {
+      return;
+    }
+
+    const formatted = formatDate(date);
+
     if (
-      !requestData.motorcycle ||
-      !requestData.serviceType ||
-      !requestData.date ||
-      !requestData.time ||
-      !requestData.description.trim()
+      !isDateAvailable(
+        formatted,
+        selectedService?.id || null
+      )
     ) {
       return;
     }
 
-    setShowMotorcycleDropdown(false);
-    setShowServiceDropdown(false);
-    setShowTimeDropdown(false);
-    setShowServicePicker(false);
-    setShowTimePicker(false);
+    setRequestData((previous) => ({
+      ...previous,
+      date: formatted,
+      time: "",
+    }));
+
+    setShowCalendar(false);
+  };
+
+  /*
+   * ============================================================
+   * FIRESTORE SCHEDULE RESERVATION
+   * ============================================================
+   */
+
+  const reserveScheduleSlot = async (
+    serviceId,
+    date,
+    time
+  ) => {
+    if (!date || !time) {
+      throw new Error(
+        "Preferred date and time are required."
+      );
+    }
+
+    const scheduleRef = doc(
+      db,
+      "schedules",
+      date
+    );
+
+    await runTransaction(
+      db,
+      async (transaction) => {
+        const scheduleSnapshot =
+          await transaction.get(
+            scheduleRef
+          );
+
+        const scheduleData =
+          scheduleSnapshot.exists()
+            ? scheduleSnapshot.data()
+            : {};
+
+        const capacity =
+          Number(
+            scheduleData.capacity ??
+              scheduleData.dailyCapacity ??
+              scheduleData.maxCapacity ??
+              5
+          );
+
+        const bookedSlots =
+          scheduleData.bookedSlots || {};
+
+        const currentCount = Number(
+          bookedSlots[time] || 0
+        );
+
+        if (currentCount >= capacity) {
+          throw new Error(
+            "This time slot is already fully booked."
+          );
+        }
+
+        transaction.set(
+          scheduleRef,
+          {
+            date,
+            capacity,
+            bookedSlots: {
+              ...bookedSlots,
+              [time]: currentCount + 1,
+            },
+            updatedAt:
+              serverTimestamp(),
+          },
+          {
+            merge: true,
+          }
+        );
+
+        if (serviceId) {
+          transaction.update(
+            doc(
+              db,
+              "services",
+              serviceId
+            ),
+            {
+              scheduleReservationActive: true,
+              scheduleReservationDate: date,
+              scheduleReservationTime: time,
+              updatedAt:
+                serverTimestamp(),
+            }
+          );
+        }
+      }
+    );
+  };
+
+  /*
+   * ============================================================
+   * RELEASE SCHEDULE SLOT
+   * ============================================================
+   */
+
+  const releaseScheduleSlot = async (
+    service
+  ) => {
+    const date =
+      service.scheduleReservationDate ||
+      service.preferredDate;
+
+    const time =
+      service.scheduleReservationTime ||
+      service.preferredTime;
+
+    if (!date || !time) {
+      return;
+    }
+
+    const scheduleRef = doc(
+      db,
+      "schedules",
+      date
+    );
+
+    await runTransaction(
+      db,
+      async (transaction) => {
+        const scheduleSnapshot =
+          await transaction.get(
+            scheduleRef
+          );
+
+        if (!scheduleSnapshot.exists()) {
+          return;
+        }
+
+        const scheduleData =
+          scheduleSnapshot.data();
+
+        const bookedSlots =
+          scheduleData.bookedSlots || {};
+
+        const currentCount = Number(
+          bookedSlots[time] || 0
+        );
+
+        const nextCount =
+          Math.max(0, currentCount - 1);
+
+        transaction.update(
+          scheduleRef,
+          {
+            bookedSlots: {
+              ...bookedSlots,
+              [time]: nextCount,
+            },
+            updatedAt:
+              serverTimestamp(),
+          }
+        );
+      }
+    );
+  };
+
+  /*
+   * ============================================================
+   * REQUEST VALIDATION
+   * ============================================================
+   */
+
+  const validateRequest = () => {
+    if (!requestData.motorcycleId) {
+      return false;
+    }
+
+    if (!requestData.serviceType) {
+      return false;
+    }
+
+    if (!requestData.date) {
+      return false;
+    }
+
+    if (!requestData.time) {
+      return false;
+    }
+
+    if (!requestData.description.trim()) {
+      return false;
+    }
+
+    return true;
+  };
+
+  /*
+   * ============================================================
+   * CREATE REQUEST
+   * ============================================================
+   */
+
+  const handleContinueRequest = () => {
+    if (!validateRequest()) {
+      return;
+    }
+
+    if (
+      !isTimeAvailable(
+        requestData.date,
+        requestData.time
+      )
+    ) {
+      return;
+    }
+
+    closeAllDropdowns();
 
     setShowRequestForm(false);
     setShowConfirmModal(true);
   };
 
-  const handleConfirmRequest = () => {
-    const serviceRequest = {
-      id: `REQ-${Date.now()}`,
-      motorcycle: requestData.motorcycle,
-      serviceType: requestData.serviceType,
-      preferredDate: requestData.date,
-      preferredTime: requestData.time,
-      issueDescription: requestData.description,
-      requestDate: new Date().toISOString().split("T")[0],
-      status: "Pending Approval",
-      paymentMethod: null,
-      paymentStatus: "Pending",
-      estimatedCost: 300,
-    };
+  const handleConfirmRequest = async () => {
+    if (!currentUser?.uid) {
+      return;
+    }
 
-    console.log(
-      "SERVICE REQUEST:",
-      serviceRequest
+    if (!validateRequest()) {
+      return;
+    }
+
+    if (isSaving) {
+      return;
+    }
+
+    setIsSaving(true);
+
+    try {
+      const selectedMotorcycle =
+        motorcycles.find(
+          (motorcycle) =>
+            motorcycle.id ===
+            requestData.motorcycleId
+        );
+
+      if (!selectedMotorcycle) {
+        throw new Error(
+          "Selected motorcycle could not be found."
+        );
+      }
+
+      const requestDate =
+        new Date()
+          .toISOString()
+          .split("T")[0];
+
+      const serviceRequest = {
+        customerId:
+          currentUser.uid,
+
+        customerUid:
+          currentUser.uid,
+
+        customerEmail:
+          currentUser.email || "",
+
+        motorcycleId:
+          selectedMotorcycle.id,
+
+        motorcycle:
+          getMotorcycleLabel(
+            selectedMotorcycle
+          ),
+
+        serviceType:
+          requestData.serviceType,
+
+        preferredDate:
+          requestData.date,
+
+        preferredTime:
+          requestData.time,
+
+        issueDescription:
+          requestData.description.trim(),
+
+        requestDate,
+
+        status:
+          "Pending Approval",
+
+        approvalStatus:
+          "pending",
+
+        paymentMethod:
+          null,
+
+        paymentStatus:
+          "Pending",
+
+        estimatedCost:
+          0,
+
+        estimatedTime:
+          "",
+
+        assignedStaff:
+          "",
+
+        assignedStaffId:
+          null,
+
+        assignedStaffPosition:
+          null,
+
+        scheduleReservationActive:
+          true,
+
+        scheduleReservationDate:
+          requestData.date,
+
+        scheduleReservationTime:
+          requestData.time,
+
+        createdAt:
+          serverTimestamp(),
+
+        updatedAt:
+          serverTimestamp(),
+      };
+
+      /*
+       * Reserve the schedule and create the service
+       * inside one Firestore transaction.
+       */
+      const documentReference =
+        await runTransaction(
+          db,
+          async (transaction) => {
+            const scheduleRef =
+              doc(
+                db,
+                "schedules",
+                requestData.date
+              );
+
+            const scheduleSnapshot =
+              await transaction.get(
+                scheduleRef
+              );
+
+            const scheduleData =
+              scheduleSnapshot.exists()
+                ? scheduleSnapshot.data()
+                : {};
+
+            const capacity =
+              Number(
+                scheduleData.capacity ??
+                  scheduleData.dailyCapacity ??
+                  scheduleData.maxCapacity ??
+                  5
+              );
+
+            const bookedSlots =
+              scheduleData.bookedSlots ||
+              {};
+
+            const currentCount =
+              Number(
+                bookedSlots[
+                  requestData.time
+                ] || 0
+              );
+
+            if (
+              currentCount >=
+              capacity
+            ) {
+              throw new Error(
+                "The selected time is already fully booked."
+              );
+            }
+
+            const serviceRef =
+              doc(
+                collection(
+                  db,
+                  "services"
+                )
+              );
+
+            transaction.set(
+              serviceRef,
+              serviceRequest
+            );
+
+            transaction.set(
+              scheduleRef,
+              {
+                date:
+                  requestData.date,
+
+                capacity,
+
+                bookedSlots: {
+                  ...bookedSlots,
+                  [requestData.time]:
+                    currentCount + 1,
+                },
+
+                updatedAt:
+                  serverTimestamp(),
+              },
+              {
+                merge: true,
+              }
+            );
+
+            return serviceRef;
+          }
+        );
+
+      setCurrentServiceRequest({
+        id:
+          documentReference.id,
+
+        ...serviceRequest,
+
+        createdAt:
+          new Date().toISOString(),
+
+        updatedAt:
+          new Date().toISOString(),
+      });
+
+      setShowConfirmModal(false);
+
+      resetRequestForm();
+
+      router.push("/payment");
+    } catch (error) {
+      console.error(
+        "Error creating service request:",
+        error
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  /*
+   * ============================================================
+   * EDIT REQUEST
+   * ============================================================
+   */
+
+  const handleSaveEdit = async () => {
+    if (!selectedService) {
+      return;
+    }
+
+    if (!validateRequest()) {
+      return;
+    }
+
+    if (isSaving) {
+      return;
+    }
+
+    setIsSaving(true);
+
+    try {
+      const oldDate =
+        selectedService.scheduleReservationDate ||
+        selectedService.preferredDate;
+
+      const oldTime =
+        selectedService.scheduleReservationTime ||
+        selectedService.preferredTime;
+
+      const newDate =
+        requestData.date;
+
+      const newTime =
+        requestData.time;
+
+      const selectedMotorcycle =
+        motorcycles.find(
+          (motorcycle) =>
+            motorcycle.id ===
+            requestData.motorcycleId
+        );
+
+      if (!selectedMotorcycle) {
+        throw new Error(
+          "Selected motorcycle could not be found."
+        );
+      }
+
+      await runTransaction(
+        db,
+        async (transaction) => {
+          const oldScheduleRef =
+            doc(
+              db,
+              "schedules",
+              oldDate
+            );
+
+          const newScheduleRef =
+            doc(
+              db,
+              "schedules",
+              newDate
+            );
+
+          const oldScheduleSnapshot =
+            await transaction.get(
+              oldScheduleRef
+            );
+
+          let newScheduleSnapshot =
+            null;
+
+          if (
+            oldDate === newDate
+          ) {
+            newScheduleSnapshot =
+              oldScheduleSnapshot;
+          } else {
+            newScheduleSnapshot =
+              await transaction.get(
+                newScheduleRef
+              );
+          }
+
+          /*
+           * If the date/time did not change,
+           * only update the service itself.
+           */
+          if (
+            oldDate === newDate &&
+            oldTime === newTime
+          ) {
+            transaction.update(
+              doc(
+                db,
+                "services",
+                selectedService.id
+              ),
+              {
+                motorcycleId:
+                  selectedMotorcycle.id,
+
+                motorcycle:
+                  getMotorcycleLabel(
+                    selectedMotorcycle
+                  ),
+
+                serviceType:
+                  requestData.serviceType,
+
+                preferredDate:
+                  newDate,
+
+                preferredTime:
+                  newTime,
+
+                issueDescription:
+                  requestData.description.trim(),
+
+                updatedAt:
+                  serverTimestamp(),
+              }
+            );
+
+            return;
+          }
+
+          /*
+           * Check new schedule capacity.
+           */
+          const newScheduleData =
+            newScheduleSnapshot?.exists()
+              ? newScheduleSnapshot.data()
+              : {};
+
+          const newCapacity =
+            Number(
+              newScheduleData.capacity ??
+                newScheduleData.dailyCapacity ??
+                newScheduleData.maxCapacity ??
+                5
+            );
+
+          const newBookedSlots =
+            newScheduleData.bookedSlots ||
+            {};
+
+          const newCurrentCount =
+            Number(
+              newBookedSlots[newTime] ||
+                0
+            );
+
+          if (
+            newCurrentCount >=
+            newCapacity
+          ) {
+            throw new Error(
+              "The selected new schedule is fully booked."
+            );
+          }
+
+          /*
+           * Release old slot.
+           */
+          if (
+            oldScheduleSnapshot.exists()
+          ) {
+            const oldScheduleData =
+              oldScheduleSnapshot.data();
+
+            const oldBookedSlots =
+              oldScheduleData.bookedSlots ||
+              {};
+
+            const oldCount =
+              Number(
+                oldBookedSlots[
+                  oldTime
+                ] || 0
+              );
+
+            transaction.update(
+              oldScheduleRef,
+              {
+                bookedSlots: {
+                  ...oldBookedSlots,
+                  [oldTime]:
+                    Math.max(
+                      0,
+                      oldCount - 1
+                    ),
+                },
+
+                updatedAt:
+                  serverTimestamp(),
+              }
+            );
+          }
+
+          /*
+           * Reserve new slot.
+           */
+          transaction.set(
+            newScheduleRef,
+            {
+              date:
+                newDate,
+
+              capacity:
+                newCapacity,
+
+              bookedSlots: {
+                ...newBookedSlots,
+
+                [newTime]:
+                  newCurrentCount + 1,
+              },
+
+              updatedAt:
+                serverTimestamp(),
+            },
+            {
+              merge: true,
+            }
+          );
+
+          /*
+           * Update service.
+           */
+          transaction.update(
+            doc(
+              db,
+              "services",
+              selectedService.id
+            ),
+            {
+              motorcycleId:
+                selectedMotorcycle.id,
+
+              motorcycle:
+                getMotorcycleLabel(
+                  selectedMotorcycle
+                ),
+
+              serviceType:
+                requestData.serviceType,
+
+              preferredDate:
+                newDate,
+
+              preferredTime:
+                newTime,
+
+              issueDescription:
+                requestData.description.trim(),
+
+              scheduleReservationActive:
+                true,
+
+              scheduleReservationDate:
+                newDate,
+
+              scheduleReservationTime:
+                newTime,
+
+              updatedAt:
+                serverTimestamp(),
+            }
+          );
+        }
+      );
+
+      setShowEditModal(false);
+      setSelectedService(null);
+      resetRequestForm();
+    } catch (error) {
+      console.error(
+        "Error editing service request:",
+        error
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  /*
+   * ============================================================
+   * CANCEL REQUEST
+   * ============================================================
+   */
+
+  const openCancelRequest = (service) => {
+    setSelectedService(service);
+    setShowCancelModal(true);
+  };
+
+  const handleCancelRequest = async () => {
+    if (!selectedService) {
+      return;
+    }
+
+    if (isSaving) {
+      return;
+    }
+
+    setIsSaving(true);
+
+    try {
+      const serviceRef =
+        doc(
+          db,
+          "services",
+          selectedService.id
+        );
+
+      await runTransaction(
+        db,
+        async (transaction) => {
+          const date =
+            selectedService.scheduleReservationDate ||
+            selectedService.preferredDate;
+
+          const time =
+            selectedService.scheduleReservationTime ||
+            selectedService.preferredTime;
+
+          if (date && time) {
+            const scheduleRef =
+              doc(
+                db,
+                "schedules",
+                date
+              );
+
+            const scheduleSnapshot =
+              await transaction.get(
+                scheduleRef
+              );
+
+            if (
+              scheduleSnapshot.exists()
+            ) {
+              const scheduleData =
+                scheduleSnapshot.data();
+
+              const bookedSlots =
+                scheduleData.bookedSlots ||
+                {};
+
+              const currentCount =
+                Number(
+                  bookedSlots[
+                    time
+                  ] || 0
+                );
+
+              transaction.update(
+                scheduleRef,
+                {
+                  bookedSlots: {
+                    ...bookedSlots,
+
+                    [time]:
+                      Math.max(
+                        0,
+                        currentCount - 1
+                      ),
+                  },
+
+                  updatedAt:
+                    serverTimestamp(),
+                }
+              );
+            }
+          }
+
+          transaction.update(
+            serviceRef,
+            {
+              status:
+                "Cancelled",
+
+              approvalStatus:
+                "cancelled",
+
+              scheduleReservationActive:
+                false,
+
+              cancelledAt:
+                serverTimestamp(),
+
+              updatedAt:
+                serverTimestamp(),
+            }
+          );
+        }
+      );
+
+      setShowCancelModal(false);
+      setSelectedService(null);
+    } catch (error) {
+      console.error(
+        "Error cancelling service request:",
+        error
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  /*
+   * ============================================================
+   * CAN EDIT / CANCEL
+   * ============================================================
+   */
+
+  const canModifyService = (service) => {
+    const status = normalizeStatus(
+      service.status
     );
 
-    setCurrentServiceRequest(serviceRequest);
-    setShowConfirmModal(false);
-
-    setRequestData({
-      motorcycle: "",
-      serviceType: "",
-      date: "",
-      time: "",
-      description: "",
-    });
-
-    router.push("/payment");
+    return ![
+      "rejected",
+      "cancelled",
+      "canceled",
+      "completed",
+      "in progress",
+      "waiting for parts",
+      "quality check",
+    ].includes(status);
   };
+
+  /*
+   * ============================================================
+   * RENDER
+   * ============================================================
+   */
 
   return (
     <CustomerLayout title="My Services">
@@ -296,9 +1638,7 @@ export default function CustomerServices() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* ================================= */}
         {/* TOP ACTIONS */}
-        {/* ================================= */}
 
         <View style={styles.topSection}>
           <View style={styles.tabs}>
@@ -348,9 +1688,7 @@ export default function CustomerServices() {
           </TouchableOpacity>
         </View>
 
-        {/* ================================= */}
         {/* PENDING */}
-        {/* ================================= */}
 
         {activeTab === "pending" && (
           <>
@@ -394,42 +1732,79 @@ export default function CustomerServices() {
                             styles.subtitle
                           }
                         >
-                          {request.motorcycle}
+                          {
+                            request.motorcycle
+                          }
                         </Text>
                       </View>
 
                       <StatusBadge
-                        text={request.status}
+                        text={
+                          request.status
+                        }
                       />
                     </View>
 
                     <View
-                      style={styles.tracker}
+                      style={
+                        styles.tracker
+                      }
                     >
                       <TrackerStep
                         number="1"
                         label="Approved"
-                        active={false}
+                        active={
+                          normalizeStatus(
+                            request.approvalStatus
+                          ) ===
+                          "approved"
+                        }
                       />
 
                       <TrackerLine
-                        active={false}
+                        active={
+                          normalizeStatus(
+                            request.approvalStatus
+                          ) ===
+                          "approved"
+                        }
                       />
 
                       <TrackerStep
                         number="2"
                         label="Payment"
-                        active={false}
+                        active={
+                          normalizeStatus(
+                            request.paymentStatus
+                          ) ===
+                          "confirmed"
+                        }
                       />
 
                       <TrackerLine
-                        active={false}
+                        active={
+                          normalizeStatus(
+                            request.paymentStatus
+                          ) ===
+                          "confirmed"
+                        }
                       />
 
                       <TrackerStep
                         number="3"
                         label="Confirmed"
-                        active={false}
+                        active={
+                          [
+                            "in progress",
+                            "waiting for parts",
+                            "quality check",
+                            "completed",
+                          ].includes(
+                            normalizeStatus(
+                              request.status
+                            )
+                          )
+                        }
                       />
                     </View>
 
@@ -445,17 +1820,23 @@ export default function CustomerServices() {
                         ],
                         [
                           "Request Date",
-                          "2026-03-22",
+                          request.requestDate ||
+                            "-",
                         ],
                         [
                           "Estimated Cost",
-                          `₱${request.estimatedCost.toLocaleString()}`,
+                          `₱${Number(
+                            request.estimatedCost ||
+                              0
+                          ).toLocaleString()}`,
                         ],
                       ]}
                     />
 
                     <View
-                      style={styles.infoBox}
+                      style={
+                        styles.infoBox
+                      }
                     >
                       <Text
                         style={
@@ -508,7 +1889,8 @@ export default function CustomerServices() {
                           }
                         >
                           {
-                            request.paymentMethod
+                            request.paymentMethod ||
+                            "Not selected"
                           }
                         </Text>
                       </View>
@@ -532,10 +1914,61 @@ export default function CustomerServices() {
                           }
                         >
                           {
-                            request.paymentStatus
+                            request.paymentStatus ||
+                            "Pending"
                           }
                         </Text>
                       </View>
+                    </View>
+
+                    <View
+                      style={
+                        styles.pendingActions
+                      }
+                    >
+                      {canModifyService(
+                        request
+                      ) && (
+                        <>
+                          <TouchableOpacity
+                            style={
+                              styles.outlineAction
+                            }
+                            onPress={() =>
+                              openEditRequest(
+                                request
+                              )
+                            }
+                          >
+                            <Text
+                              style={
+                                styles.outlineActionText
+                              }
+                            >
+                              Edit Request
+                            </Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={
+                              styles.cancelAction
+                            }
+                            onPress={() =>
+                              openCancelRequest(
+                                request
+                              )
+                            }
+                          >
+                            <Text
+                              style={
+                                styles.cancelActionText
+                              }
+                            >
+                              Cancel Request
+                            </Text>
+                          </TouchableOpacity>
+                        </>
+                      )}
                     </View>
 
                     <View
@@ -548,9 +1981,11 @@ export default function CustomerServices() {
                           styles.noticeText
                         }
                       >
-                        Waiting for admin approval.
-                        You will be notified once
-                        your request has been reviewed.
+                        Waiting for admin
+                        approval. You will
+                        be notified once your
+                        request has been
+                        reviewed.
                       </Text>
                     </View>
                   </View>
@@ -560,9 +1995,7 @@ export default function CustomerServices() {
           </>
         )}
 
-        {/* ================================= */}
         {/* ACTIVE */}
-        {/* ================================= */}
 
         {activeTab === "active" && (
           <>
@@ -613,33 +2046,51 @@ export default function CustomerServices() {
                       </View>
 
                       <StatusBadge
-                        text={service.status}
+                        text={
+                          service.status
+                        }
                       />
                     </View>
 
                     <InfoGrid
                       items={[
                         [
-                          "Request Date",
-                          service.requestDate,
+                          "Preferred Date",
+                          service.preferredDate,
+                        ],
+                        [
+                          "Preferred Time",
+                          service.preferredTime,
                         ],
                         [
                           "Assigned Staff",
-                          service.assignedStaff,
+                          service.assignedStaff ||
+                            "Pending assignment",
                         ],
                         [
                           "Estimated Cost",
-                          `₱${service.estimatedCost.toLocaleString()}`,
+                          `₱${Number(
+                            service.estimatedCost ||
+                              0
+                          ).toLocaleString()}`,
                         ],
                         [
                           "Estimated Time",
-                          service.estimatedTime,
+                          service.estimatedTime ||
+                            "Pending",
+                        ],
+                        [
+                          "Payment",
+                          service.paymentStatus ||
+                            "Pending",
                         ],
                       ]}
                     />
 
                     <View
-                      style={styles.infoBox}
+                      style={
+                        styles.infoBox
+                      }
                     >
                       <Text
                         style={
@@ -654,7 +2105,9 @@ export default function CustomerServices() {
                           styles.infoText
                         }
                       >
-                        {service.notes}
+                        {service.notes ||
+                          service.issueDescription ||
+                          "No service notes available."}
                       </Text>
                     </View>
 
@@ -690,7 +2143,8 @@ export default function CustomerServices() {
                           }
                         >
                           {
-                            service.paymentMethod
+                            service.paymentMethod ||
+                            "Not selected"
                           }
                         </Text>
                       </View>
@@ -714,11 +2168,60 @@ export default function CustomerServices() {
                           }
                         >
                           {
-                            service.paymentStatus
+                            service.paymentStatus ||
+                            "Pending"
                           }
                         </Text>
                       </View>
                     </View>
+
+                    {canModifyService(
+                      service
+                    ) && (
+                      <View
+                        style={
+                          styles.pendingActions
+                        }
+                      >
+                        <TouchableOpacity
+                          style={
+                            styles.outlineAction
+                          }
+                          onPress={() =>
+                            openEditRequest(
+                              service
+                            )
+                          }
+                        >
+                          <Text
+                            style={
+                              styles.outlineActionText
+                            }
+                          >
+                            Edit Request
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={
+                            styles.cancelAction
+                          }
+                          onPress={() =>
+                            openCancelRequest(
+                              service
+                            )
+                          }
+                        >
+                          <Text
+                            style={
+                              styles.cancelActionText
+                            }
+                          >
+                            Cancel Request
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
 
                     <TouchableOpacity
                       style={
@@ -745,9 +2248,7 @@ export default function CustomerServices() {
           </>
         )}
 
-        {/* ================================= */}
         {/* COMPLETED */}
-        {/* ================================= */}
 
         {activeTab === "completed" && (
           <>
@@ -805,21 +2306,31 @@ export default function CustomerServices() {
                       items={[
                         [
                           "Completed Date",
-                          service.completedDate,
+                          service.completedDate ||
+                            "-",
                         ],
                         [
                           "Total Cost",
-                          `₱${service.cost.toLocaleString()}`,
+                          `₱${Number(
+                            service.cost ??
+                              service.estimatedCost ??
+                              0
+                          ).toLocaleString()}`,
                         ],
                         [
                           "Parts Used",
-                          service.partsUsed.join(
-                            ", "
-                          ),
+                          (
+                            service.partsUsed ||
+                            []
+                          ).join(", ") ||
+                            "-",
                         ],
                         [
                           "Rating",
-                          `${service.rating}/5`,
+                          `${Number(
+                            service.rating ||
+                              0
+                          )}/5`,
                         ],
                       ]}
                     />
@@ -841,10 +2352,20 @@ export default function CustomerServices() {
                         style={styles.stars}
                       >
                         {"★".repeat(
-                          service.rating
+                          Number(
+                            service.rating ||
+                              0
+                          )
                         )}
                         {"☆".repeat(
-                          5 - service.rating
+                          Math.max(
+                            0,
+                            5 -
+                              Number(
+                                service.rating ||
+                                  0
+                              )
+                          )
                         )}
                       </Text>
 
@@ -853,7 +2374,8 @@ export default function CustomerServices() {
                           styles.feedback
                         }
                       >
-                        "{service.feedback}"
+                        "{service.feedback ||
+                          "No feedback yet."}"
                       </Text>
                     </View>
 
@@ -879,17 +2401,26 @@ export default function CustomerServices() {
         )}
       </ScrollView>
 
-      {/* ================================= */}
-      {/* REQUEST SERVICE */}
-      {/* ================================= */}
+      {/* ========================================================
+          REQUEST / EDIT MODAL
+          ======================================================== */}
 
       <Modal
-        visible={showRequestForm}
+        visible={
+          showRequestForm ||
+          showEditModal
+        }
         transparent
         animationType="slide"
-        onRequestClose={
-          closeRequestForm
-        }
+        onRequestClose={() => {
+          if (showEditModal) {
+            setShowEditModal(false);
+            setSelectedService(null);
+            resetRequestForm();
+          } else {
+            closeRequestForm();
+          }
+        }}
       >
         <View
           style={
@@ -906,7 +2437,7 @@ export default function CustomerServices() {
               }
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
-              nestedScrollEnabled={true}
+              nestedScrollEnabled
             >
               <View
                 style={styles.modalHeader}
@@ -917,7 +2448,9 @@ export default function CustomerServices() {
                       styles.modalTitle
                     }
                   >
-                    Request Service
+                    {showEditModal
+                      ? "Edit Service Request"
+                      : "Request Service"}
                   </Text>
 
                   <Text
@@ -931,9 +2464,21 @@ export default function CustomerServices() {
                 </View>
 
                 <TouchableOpacity
-                  onPress={
-                    closeRequestForm
-                  }
+                  onPress={() => {
+                    if (
+                      showEditModal
+                    ) {
+                      setShowEditModal(
+                        false
+                      );
+                      setSelectedService(
+                        null
+                      );
+                      resetRequestForm();
+                    } else {
+                      closeRequestForm();
+                    }
+                  }}
                 >
                   <Text
                     style={
@@ -945,9 +2490,7 @@ export default function CustomerServices() {
                 </TouchableOpacity>
               </View>
 
-              {/* ------------------------- */}
               {/* MOTORCYCLE */}
-              {/* ------------------------- */}
 
               <Text
                 style={styles.formLabel}
@@ -978,7 +2521,7 @@ export default function CustomerServices() {
                       false
                     );
 
-                    setShowDatePicker(
+                    setShowCalendar(
                       false
                     );
                   }}
@@ -1009,50 +2552,58 @@ export default function CustomerServices() {
                       styles.dropdownMenu
                     }
                   >
-                    {motorcycleOptions.map(
-                      (motorcycle) => (
-                        <TouchableOpacity
-                          key={
-                            motorcycle.id
-                          }
-                          style={
-                            styles.dropdownItem
-                          }
-                          onPress={() => {
-                            setRequestData(
-                              (
-                                previous
-                              ) => ({
-                                ...previous,
-                                motorcycle:
-                                  motorcycle.label,
-                              })
-                            );
-
-                            setShowMotorcycleDropdown(
-                              false
-                            );
-                          }}
-                        >
-                          <Text
+                    <ScrollView
+                      nestedScrollEnabled
+                      style={
+                        styles.dropdownScroll
+                      }
+                      showsVerticalScrollIndicator
+                    >
+                      {motorcycleOptions.map(
+                        (motorcycle) => (
+                          <TouchableOpacity
+                            key={
+                              motorcycle.id
+                            }
                             style={
-                              styles.dropdownItemText
+                              styles.dropdownItem
                             }
+                            onPress={() => {
+                              setRequestData(
+                                (
+                                  previous
+                                ) => ({
+                                  ...previous,
+                                  motorcycle:
+                                    motorcycle.label,
+                                  motorcycleId:
+                                    motorcycle.id,
+                                })
+                              );
+
+                              setShowMotorcycleDropdown(
+                                false
+                              );
+                            }}
                           >
-                            {
-                              motorcycle.label
-                            }
-                          </Text>
-                        </TouchableOpacity>
-                      )
-                    )}
+                            <Text
+                              style={
+                                styles.dropdownItemText
+                              }
+                            >
+                              {
+                                motorcycle.label
+                              }
+                            </Text>
+                          </TouchableOpacity>
+                        )
+                      )}
+                    </ScrollView>
                   </View>
                 )}
               </View>
 
-              {/* ------------------------- */}
               {/* SERVICE TYPE */}
-              {/* ------------------------- */}
 
               <Text
                 style={[
@@ -1073,12 +2624,22 @@ export default function CustomerServices() {
                 <TouchableOpacity
                   style={styles.dropdown}
                   onPress={() => {
-                    setShowMotorcycleDropdown(false);
-                    setShowServiceDropdown(false);
-                    setShowTimeDropdown(false);
-                    setShowDatePicker(false);
-                    setShowTimePicker(false);
-                    setShowServicePicker(true);
+                    setShowServiceDropdown(
+                      (previous) =>
+                        !previous
+                    );
+
+                    setShowMotorcycleDropdown(
+                      false
+                    );
+
+                    setShowTimeDropdown(
+                      false
+                    );
+
+                    setShowCalendar(
+                      false
+                    );
                   }}
                 >
                   <Text
@@ -1101,12 +2662,58 @@ export default function CustomerServices() {
                   </Text>
                 </TouchableOpacity>
 
+                {showServiceDropdown && (
+                  <View
+                    style={
+                      styles.dropdownMenu
+                    }
+                  >
+                    <ScrollView
+                      nestedScrollEnabled
+                      style={
+                        styles.dropdownScroll
+                      }
+                      showsVerticalScrollIndicator
+                    >
+                      {serviceTypes.map(
+                        (service) => (
+                          <TouchableOpacity
+                            key={service}
+                            style={
+                              styles.dropdownItem
+                            }
+                            onPress={() => {
+                              setRequestData(
+                                (
+                                  previous
+                                ) => ({
+                                  ...previous,
+                                  serviceType:
+                                    service,
+                                })
+                              );
 
+                              setShowServiceDropdown(
+                                false
+                              );
+                            }}
+                          >
+                            <Text
+                              style={
+                                styles.dropdownItemText
+                              }
+                            >
+                              {service}
+                            </Text>
+                          </TouchableOpacity>
+                        )
+                      )}
+                    </ScrollView>
+                  </View>
+                )}
               </View>
 
-              {/* ------------------------- */}
               {/* DATE */}
-              {/* ------------------------- */}
 
               <Text
                 style={[
@@ -1118,10 +2725,15 @@ export default function CustomerServices() {
               </Text>
 
               <TouchableOpacity
-                style={styles.dropdown}
+                style={[
+                  styles.dropdown,
+                  requestData.date &&
+                    styles.selectedDateDropdown,
+                ]}
                 onPress={() => {
-                  setShowDatePicker(
-                    true
+                  setShowCalendar(
+                    (previous) =>
+                      !previous
                   );
 
                   setShowMotorcycleDropdown(
@@ -1157,106 +2769,216 @@ export default function CustomerServices() {
                 </Text>
               </TouchableOpacity>
 
-              {/* Android Native Calendar */}
-              {showDatePicker &&
-                Platform.OS ===
-                  "android" && (
-                  <DateTimePicker
-                    value={
-                      requestData.date
-                        ? new Date(
-                            `${requestData.date}T00:00:00`
-                          )
-                        : new Date()
-                    }
-                    mode="date"
-                    display="calendar"
-                    minimumDate={
-                      new Date()
-                    }
-                    onChange={
-                      handleDateChange
-                    }
-                  />
-                )}
-
-              {/* iOS Calendar Modal */}
-              {Platform.OS === "ios" && (
-                <Modal
-                  visible={showDatePicker}
-                  transparent
-                  animationType="fade"
-                  onRequestClose={() =>
-                    setShowDatePicker(
-                      false
-                    )
+              {showCalendar && (
+                <View
+                  style={
+                    styles.calendarContainer
                   }
                 >
                   <View
                     style={
-                      styles.calendarOverlay
+                      styles.calendarHeader
                     }
                   >
-                    <View
+                    <TouchableOpacity
                       style={
-                        styles.calendarCard
+                        styles.calendarNavButton
+                      }
+                      onPress={
+                        previousMonth
                       }
                     >
                       <Text
                         style={
-                          styles.calendarTitle
+                          styles.calendarNavText
                         }
                       >
-                        Select Preferred Date
+                        ‹
                       </Text>
+                    </TouchableOpacity>
 
-                      <DateTimePicker
-                        value={
-                          requestData.date
-                            ? new Date(
-                                `${requestData.date}T00:00:00`
-                              )
-                            : new Date()
-                        }
-                        mode="date"
-                        display="inline"
-                        minimumDate={
-                          new Date()
-                        }
-                        onChange={
-                          handleDateChange
-                        }
+                    <Text
+                      style={
+                        styles.calendarMonth
+                      }
+                    >
+                      {monthLabel}
+                    </Text>
+
+                    <TouchableOpacity
+                      style={
+                        styles.calendarNavButton
+                      }
+                      onPress={nextMonth}
+                    >
+                      <Text
                         style={
-                          styles.calendarPicker
+                          styles.calendarNavText
                         }
+                      >
+                        ›
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <View
+                    style={
+                      styles.calendarWeekRow
+                    }
+                  >
+                    {[
+                      "Sun",
+                      "Mon",
+                      "Tue",
+                      "Wed",
+                      "Thu",
+                      "Fri",
+                      "Sat",
+                    ].map((day) => (
+                      <Text
+                        key={day}
+                        style={
+                          styles.calendarWeekText
+                        }
+                      >
+                        {day}
+                      </Text>
+                    ))}
+                  </View>
+
+                  <View
+                    style={
+                      styles.calendarGrid
+                    }
+                  >
+                    {calendarDays.map(
+                      (date, index) => {
+                        if (!date) {
+                          return (
+                            <View
+                              key={`empty-${index}`}
+                              style={
+                                styles.calendarDay
+                              }
+                            />
+                          );
+                        }
+
+                        const dateString =
+                          formatDate(
+                            date
+                          );
+
+                        const today =
+                          getToday();
+
+                        const isPast =
+                          date < today;
+
+                        const available =
+                          !isPast &&
+                          isDateAvailable(
+                            dateString,
+                            selectedService?.id ||
+                              null
+                          );
+
+                        const selected =
+                          requestData.date ===
+                          dateString;
+
+                        return (
+                          <TouchableOpacity
+                            key={
+                              dateString
+                            }
+                            disabled={
+                              !available
+                            }
+                            onPress={() =>
+                              selectCalendarDate(
+                                date
+                              )
+                            }
+                            style={[
+                              styles.calendarDay,
+                              selected &&
+                                styles.calendarDaySelected,
+                              available &&
+                                !selected &&
+                                styles.calendarDayAvailable,
+                              !available &&
+                                styles.calendarDayFull,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.calendarDayText,
+                                selected &&
+                                  styles.calendarDayTextSelected,
+                                !available &&
+                                  styles.calendarDayTextFull,
+                              ]}
+                            >
+                              {date.getDate()}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      }
+                    )}
+                  </View>
+
+                  <View
+                    style={
+                      styles.calendarLegend
+                    }
+                  >
+                    <View
+                      style={
+                        styles.legendItem
+                      }
+                    >
+                      <View
+                        style={[
+                          styles.legendDot,
+                          styles.legendAvailable,
+                        ]}
                       />
 
-                      <TouchableOpacity
+                      <Text
                         style={
-                          styles.calendarDone
-                        }
-                        onPress={() =>
-                          setShowDatePicker(
-                            false
-                          )
+                          styles.legendText
                         }
                       >
-                        <Text
-                          style={
-                            styles.calendarDoneText
-                          }
-                        >
-                          Done
-                        </Text>
-                      </TouchableOpacity>
+                        Available
+                      </Text>
+                    </View>
+
+                    <View
+                      style={
+                        styles.legendItem
+                      }
+                    >
+                      <View
+                        style={[
+                          styles.legendDot,
+                          styles.legendFull,
+                        ]}
+                      />
+
+                      <Text
+                        style={
+                          styles.legendText
+                        }
+                      >
+                        Fully Booked
+                      </Text>
                     </View>
                   </View>
-                </Modal>
+                </View>
               )}
 
-              {/* ------------------------- */}
               {/* TIME */}
-              {/* ------------------------- */}
 
               <Text
                 style={[
@@ -1276,13 +2998,32 @@ export default function CustomerServices() {
               >
                 <TouchableOpacity
                   style={styles.dropdown}
+                  disabled={
+                    !requestData.date
+                  }
                   onPress={() => {
-                    setShowMotorcycleDropdown(false);
-                    setShowServiceDropdown(false);
-                    setShowTimeDropdown(false);
-                    setShowDatePicker(false);
-                    setShowServicePicker(false);
-                    setShowTimePicker(true);
+                    if (
+                      !requestData.date
+                    ) {
+                      return;
+                    }
+
+                    setShowTimeDropdown(
+                      (previous) =>
+                        !previous
+                    );
+
+                    setShowMotorcycleDropdown(
+                      false
+                    );
+
+                    setShowServiceDropdown(
+                      false
+                    );
+
+                    setShowCalendar(
+                      false
+                    );
                   }}
                 >
                   <Text
@@ -1293,7 +3034,9 @@ export default function CustomerServices() {
                     ]}
                   >
                     {requestData.time ||
-                      "Select time"}
+                      (requestData.date
+                        ? "Select time"
+                        : "Select date first")}
                   </Text>
 
                   <Text
@@ -1305,12 +3048,94 @@ export default function CustomerServices() {
                   </Text>
                 </TouchableOpacity>
 
+                {showTimeDropdown &&
+                  requestData.date && (
+                    <View
+                      style={
+                        styles.dropdownMenu
+                      }
+                    >
+                      <ScrollView
+                        nestedScrollEnabled
+                        style={
+                          styles.dropdownScroll
+                        }
+                        showsVerticalScrollIndicator
+                      >
+                        {availableTimes.map(
+                          (time) => {
+                            const available =
+                              isTimeAvailable(
+                                requestData.date,
+                                time,
+                                selectedService?.id ||
+                                  null
+                              );
 
+                            return (
+                              <TouchableOpacity
+                                key={time}
+                                disabled={
+                                  !available
+                                }
+                                style={[
+                                  styles.dropdownItem,
+                                  !available &&
+                                    styles.dropdownItemDisabled,
+                                ]}
+                                onPress={() => {
+                                  setRequestData(
+                                    (
+                                      previous
+                                    ) => ({
+                                      ...previous,
+                                      time,
+                                    })
+                                  );
+
+                                  setShowTimeDropdown(
+                                    false
+                                  );
+                                }}
+                              >
+                                <View
+                                  style={
+                                    styles.timeItemRow
+                                  }
+                                >
+                                  <Text
+                                    style={[
+                                      styles.dropdownItemText,
+                                      !available &&
+                                        styles.dropdownItemTextDisabled,
+                                    ]}
+                                  >
+                                    {time}
+                                  </Text>
+
+                                  <Text
+                                    style={[
+                                      styles.timeAvailabilityText,
+                                      available
+                                        ? styles.timeAvailableText
+                                        : styles.timeFullText,
+                                    ]}
+                                  >
+                                    {available
+                                      ? "Available"
+                                      : "Full"}
+                                  </Text>
+                                </View>
+                              </TouchableOpacity>
+                            );
+                          }
+                        )}
+                      </ScrollView>
+                    </View>
+                  )}
               </View>
 
-              {/* ------------------------- */}
               {/* DESCRIPTION */}
-              {/* ------------------------- */}
 
               <Text
                 style={[
@@ -1344,7 +3169,8 @@ export default function CustomerServices() {
                 }
               />
 
-              {/* Buttons */}
+              {/* BUTTONS */}
+
               <View
                 style={
                   styles.modalButtons
@@ -1354,9 +3180,21 @@ export default function CustomerServices() {
                   style={
                     styles.cancelButton
                   }
-                  onPress={
-                    closeRequestForm
-                  }
+                  onPress={() => {
+                    if (
+                      showEditModal
+                    ) {
+                      setShowEditModal(
+                        false
+                      );
+                      setSelectedService(
+                        null
+                      );
+                      resetRequestForm();
+                    } else {
+                      closeRequestForm();
+                    }
+                  }}
                 >
                   <Text
                     style={
@@ -1370,24 +3208,17 @@ export default function CustomerServices() {
                 <TouchableOpacity
                   style={[
                     styles.continueButton,
-                    (
-                      !requestData.motorcycle ||
-                      !requestData.serviceType ||
-                      !requestData.date ||
-                      !requestData.time ||
-                      !requestData.description.trim()
-                    ) &&
+                    !validateRequest() &&
                       styles.continueDisabled,
                   ]}
                   disabled={
-                    !requestData.motorcycle ||
-                    !requestData.serviceType ||
-                    !requestData.date ||
-                    !requestData.time ||
-                    !requestData.description.trim()
+                    !validateRequest() ||
+                    isSaving
                   }
                   onPress={
-                    handleContinueRequest
+                    showEditModal
+                      ? handleSaveEdit
+                      : handleContinueRequest
                   }
                 >
                   <Text
@@ -1395,7 +3226,11 @@ export default function CustomerServices() {
                       styles.continueButtonText
                     }
                   >
-                    Continue
+                    {isSaving
+                      ? "Saving..."
+                      : showEditModal
+                      ? "Save Changes"
+                      : "Continue"}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1404,202 +3239,16 @@ export default function CustomerServices() {
         </View>
       </Modal>
 
-      {/* ================================= */}
-      {/* SERVICE TYPE PICKER */}
-      {/* ================================= */}
-
-      <Modal
-        visible={showServicePicker}
-        transparent
-        animationType="fade"
-        onRequestClose={() =>
-          setShowServicePicker(false)
-        }
-      >
-        <View style={styles.pickerOverlay}>
-          <View style={styles.pickerCard}>
-            <View style={styles.pickerHeader}>
-              <View style={styles.pickerHeaderText}>
-                <Text style={styles.pickerTitle}>
-                  Select Service Type
-                </Text>
-                <Text style={styles.pickerSubtitle}>
-                  Choose the service you need
-                </Text>
-              </View>
-
-              <TouchableOpacity
-                onPress={() =>
-                  setShowServicePicker(false)
-                }
-              >
-                <Text style={styles.closeButton}>
-                  ×
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              style={styles.pickerScroll}
-              contentContainerStyle={styles.pickerScrollContent}
-              showsVerticalScrollIndicator={true}
-              nestedScrollEnabled={true}
-            >
-              {serviceTypes.map((service) => (
-                <TouchableOpacity
-                  key={service}
-                  style={[
-                    styles.pickerItem,
-                    requestData.serviceType === service &&
-                      styles.pickerItemSelected,
-                  ]}
-                  onPress={() => {
-                    setRequestData((previous) => ({
-                      ...previous,
-                      serviceType: service,
-                    }));
-                    setShowServicePicker(false);
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <Text
-                    style={[
-                      styles.pickerItemText,
-                      requestData.serviceType === service &&
-                        styles.pickerItemTextSelected,
-                    ]}
-                  >
-                    {service}
-                  </Text>
-
-                  {requestData.serviceType === service && (
-                    <Text style={styles.pickerCheck}>
-                      ✓
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            <TouchableOpacity
-              style={styles.pickerDoneButton}
-              onPress={() =>
-                setShowServicePicker(false)
-              }
-              activeOpacity={0.9}
-            >
-              <Text style={styles.pickerDoneText}>
-                Done
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ================================= */}
-      {/* TIME PICKER */}
-      {/* ================================= */}
-
-      <Modal
-        visible={showTimePicker}
-        transparent
-        animationType="fade"
-        onRequestClose={() =>
-          setShowTimePicker(false)
-        }
-      >
-        <View style={styles.pickerOverlay}>
-          <View style={styles.pickerCard}>
-            <View style={styles.pickerHeader}>
-              <View style={styles.pickerHeaderText}>
-                <Text style={styles.pickerTitle}>
-                  Select Preferred Time
-                </Text>
-                <Text style={styles.pickerSubtitle}>
-                  Choose your preferred service time
-                </Text>
-              </View>
-
-              <TouchableOpacity
-                onPress={() =>
-                  setShowTimePicker(false)
-                }
-              >
-                <Text style={styles.closeButton}>
-                  ×
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              style={styles.pickerScroll}
-              contentContainerStyle={styles.pickerScrollContent}
-              showsVerticalScrollIndicator={true}
-              nestedScrollEnabled={true}
-            >
-              {availableTimes.map((time) => (
-                <TouchableOpacity
-                  key={time}
-                  style={[
-                    styles.pickerItem,
-                    requestData.time === time &&
-                      styles.pickerItemSelected,
-                  ]}
-                  onPress={() => {
-                    setRequestData((previous) => ({
-                      ...previous,
-                      time,
-                    }));
-                    setShowTimePicker(false);
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <Text
-                    style={[
-                      styles.pickerItemText,
-                      requestData.time === time &&
-                        styles.pickerItemTextSelected,
-                    ]}
-                  >
-                    {time}
-                  </Text>
-
-                  {requestData.time === time && (
-                    <Text style={styles.pickerCheck}>
-                      ✓
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            <TouchableOpacity
-              style={styles.pickerDoneButton}
-              onPress={() =>
-                setShowTimePicker(false)
-              }
-              activeOpacity={0.9}
-            >
-              <Text style={styles.pickerDoneText}>
-                Done
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ================================= */}
-      {/* CONFIRMATION */}
-      {/* ================================= */}
+      {/* ========================================================
+          CONFIRMATION
+          ======================================================== */}
 
       <Modal
         visible={showConfirmModal}
         transparent
         animationType="fade"
         onRequestClose={() =>
-          setShowConfirmModal(
-            false
-          )
+          setShowConfirmModal(false)
         }
       >
         <View
@@ -1687,9 +3336,10 @@ export default function CustomerServices() {
                   styles.confirmNoticeText
                 }
               >
-                After submitting, your request
-                will be reviewed by the admin.
-                Payment instructions will be
+                After submitting, your
+                request will be reviewed
+                by the admin. Payment
+                instructions will be
                 provided after approval.
               </Text>
             </View>
@@ -1725,6 +3375,7 @@ export default function CustomerServices() {
                 style={
                   styles.continueButton
                 }
+                disabled={isSaving}
                 onPress={
                   handleConfirmRequest
                 }
@@ -1734,7 +3385,137 @@ export default function CustomerServices() {
                     styles.continueButtonText
                   }
                 >
-                  Submit Request
+                  {isSaving
+                    ? "Submitting..."
+                    : "Submit Request"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ========================================================
+          CANCEL CONFIRMATION
+          ======================================================== */}
+
+      <Modal
+        visible={showCancelModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() =>
+          setShowCancelModal(false)
+        }
+      >
+        <View
+          style={
+            styles.confirmOverlay
+          }
+        >
+          <View
+            style={
+              styles.confirmCard
+            }
+          >
+            <Text
+              style={
+                styles.confirmTitle
+              }
+            >
+              Cancel Service Request
+            </Text>
+
+            <Text
+              style={
+                styles.confirmSubtitle
+              }
+            >
+              Are you sure you want to
+              cancel this service request?
+            </Text>
+
+            {selectedService && (
+              <>
+                <ConfirmRow
+                  label="Service"
+                  value={
+                    selectedService.serviceType
+                  }
+                />
+
+                <ConfirmRow
+                  label="Preferred Date"
+                  value={
+                    selectedService.preferredDate
+                  }
+                />
+
+                <ConfirmRow
+                  label="Preferred Time"
+                  value={
+                    selectedService.preferredTime
+                  }
+                />
+              </>
+            )}
+
+            <View
+              style={
+                styles.confirmNotice
+              }
+            >
+              <Text
+                style={
+                  styles.confirmNoticeText
+                }
+              >
+                Cancelling this request
+                will release the selected
+                schedule slot.
+              </Text>
+            </View>
+
+            <View
+              style={
+                styles.modalButtons
+              }
+            >
+              <TouchableOpacity
+                style={
+                  styles.cancelButton
+                }
+                onPress={() =>
+                  setShowCancelModal(
+                    false
+                  )
+                }
+              >
+                <Text
+                  style={
+                    styles.cancelButtonText
+                  }
+                >
+                  Keep Request
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={
+                  styles.dangerButton
+                }
+                disabled={isSaving}
+                onPress={
+                  handleCancelRequest
+                }
+              >
+                <Text
+                  style={
+                    styles.continueButtonText
+                  }
+                >
+                  {isSaving
+                    ? "Cancelling..."
+                    : "Cancel Request"}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1745,9 +3526,9 @@ export default function CustomerServices() {
   );
 }
 
-/* ================================= */
-/* HELPERS */
-/* ================================= */
+/* ============================================================
+   HELPERS
+   ============================================================ */
 
 function EmptyState({ text }) {
   return (
@@ -1839,7 +3620,7 @@ function InfoGrid({ items }) {
                 styles.infoValue
               }
             >
-              {value}
+              {value || "-"}
             </Text>
           </View>
         )
@@ -1869,15 +3650,15 @@ function ConfirmRow({
           styles.confirmValue
         }
       >
-        {value}
+        {value || "-"}
       </Text>
     </View>
   );
 }
 
-/* ================================= */
-/* STYLES */
-/* ================================= */
+/* ============================================================
+   STYLES
+   ============================================================ */
 
 const styles = StyleSheet.create({
   container: {
@@ -2126,6 +3907,44 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 
+  pendingActions: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+
+  outlineAction: {
+    flex: 1,
+    minHeight: 42,
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  outlineActionText: {
+    color: "#374151",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+
+  cancelAction: {
+    flex: 1,
+    minHeight: 42,
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  cancelActionText: {
+    color: "#4b5563",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+
   chatButton: {
     backgroundColor: "#000000",
     borderRadius: 8,
@@ -2189,9 +4008,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
 
-  /* ================================= */
   /* REQUEST MODAL */
-  /* ================================= */
 
   requestOverlay: {
     flex: 1,
@@ -2199,21 +4016,21 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
 
- requestModal: {
-  backgroundColor: "#ffffff",
-  borderTopLeftRadius: 20,
-  borderTopRightRadius: 20,
-  maxHeight: "92%",
-  paddingHorizontal: 20,
-  paddingTop: 20,
-  paddingBottom: 16,
-  overflow: "visible",
-},
+  requestModal: {
+    backgroundColor: "#ffffff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: "92%",
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
+    overflow: "visible",
+  },
 
   requestScroll: {
-  overflow: "visible",
-  flexGrow: 0,
-},
+    overflow: "visible",
+    flexGrow: 0,
+  },
 
   requestContent: {
     paddingBottom: 20,
@@ -2256,8 +4073,6 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
 
-  /* Dropdown */
-
   dropdownWrapper: {
     position: "relative",
     zIndex: 1,
@@ -2278,6 +4093,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor: "#ffffff",
+  },
+
+  selectedDateDropdown: {
+    borderColor: "#16a34a",
   },
 
   dropdownText: {
@@ -2316,6 +4135,10 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
   },
 
+  dropdownScroll: {
+    maxHeight: 190,
+  },
+
   dropdownItem: {
     minHeight: 44,
     paddingHorizontal: 13,
@@ -2325,60 +4148,168 @@ const styles = StyleSheet.create({
     borderBottomColor: "#f3f4f6",
   },
 
+  dropdownItemDisabled: {
+    backgroundColor: "#f9fafb",
+  },
+
   dropdownItemText: {
     fontSize: 12,
     color: "#374151",
   },
 
-  /* Calendar */
+  dropdownItemTextDisabled: {
+    color: "#9ca3af",
+  },
+
+  timeItemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  timeAvailabilityText: {
+    fontSize: 10,
+    fontWeight: "600",
+  },
+
+  timeAvailableText: {
+    color: "#16a34a",
+  },
+
+  timeFullText: {
+    color: "#9ca3af",
+  },
+
+  /* CALENDAR */
 
   calendarIcon: {
     fontSize: 16,
     color: "#6b7280",
   },
 
-  calendarOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+  calendarContainer: {
+    marginTop: 8,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    borderRadius: 12,
+    padding: 12,
+  },
+
+  calendarHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+
+  calendarNavButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#f3f4f6",
     alignItems: "center",
     justifyContent: "center",
-    padding: 16,
   },
 
-  calendarCard: {
-    width: "100%",
-    backgroundColor: "#ffffff",
-    borderRadius: 16,
-    padding: 18,
+  calendarNavText: {
+    fontSize: 24,
+    color: "#374151",
+    lineHeight: 28,
   },
 
-  calendarTitle: {
-    fontSize: 17,
+  calendarMonth: {
+    fontSize: 14,
     fontWeight: "700",
     color: "#111827",
-    marginBottom: 8,
   },
 
-  calendarPicker: {
-    alignSelf: "center",
+  calendarWeekRow: {
+    flexDirection: "row",
+    marginBottom: 5,
   },
 
-  calendarDone: {
-    backgroundColor: "#000000",
-    height: 44,
-    borderRadius: 9,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 8,
-  },
-
-  calendarDoneText: {
-    color: "#ffffff",
-    fontSize: 12,
+  calendarWeekText: {
+    width: "14.2857%",
+    textAlign: "center",
+    fontSize: 9,
+    color: "#9ca3af",
     fontWeight: "600",
   },
 
-  /* Description */
+  calendarGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+
+  calendarDay: {
+    width: "14.2857%",
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+    marginBottom: 3,
+  },
+
+  calendarDayAvailable: {
+    backgroundColor: "#dcfce7",
+  },
+
+  calendarDayFull: {
+    backgroundColor: "#f3f4f6",
+  },
+
+  calendarDaySelected: {
+    backgroundColor: "#16a34a",
+  },
+
+  calendarDayText: {
+    fontSize: 11,
+    color: "#111827",
+    fontWeight: "600",
+  },
+
+  calendarDayTextSelected: {
+    color: "#ffffff",
+  },
+
+  calendarDayTextFull: {
+    color: "#9ca3af",
+  },
+
+  calendarLegend: {
+    flexDirection: "row",
+    gap: 18,
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#f3f4f6",
+  },
+
+  legendItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+
+  legendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+
+  legendAvailable: {
+    backgroundColor: "#22c55e",
+  },
+
+  legendFull: {
+    backgroundColor: "#d1d5db",
+  },
+
+  legendText: {
+    fontSize: 9,
+    color: "#6b7280",
+  },
 
   descriptionInput: {
     minHeight: 105,
@@ -2390,8 +4321,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#111827",
   },
-
-  /* Bottom buttons */
 
   modalButtons: {
     flexDirection: "row",
@@ -2424,6 +4353,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
+  dangerButton: {
+    flex: 1,
+    height: 48,
+    backgroundColor: "#991b1b",
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
   continueDisabled: {
     backgroundColor: "#d1d5db",
   },
@@ -2434,112 +4372,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  /* ================================= */
-  /* PICKER MODALS */
-  /* ================================= */
-
-  pickerOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    padding: 16,
-  },
-
-  pickerCard: {
-    width: "100%",
-    maxHeight: "78%",
-    backgroundColor: "#ffffff",
-    borderRadius: 16,
-    padding: 18,
-  },
-
-  pickerHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 14,
-  },
-
-  pickerHeaderText: {
-    flex: 1,
-    paddingRight: 12,
-  },
-
-  pickerTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#111827",
-  },
-
-  pickerSubtitle: {
-    fontSize: 11,
-    color: "#9ca3af",
-    marginTop: 4,
-  },
-
-  pickerScroll: {
-    maxHeight: 320,
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    borderRadius: 10,
-  },
-
-  pickerScrollContent: {
-    paddingVertical: 2,
-  },
-
-  pickerItem: {
-    minHeight: 50,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    borderBottomWidth: 1,
-    borderBottomColor: "#f3f4f6",
-  },
-
-  pickerItemSelected: {
-    backgroundColor: "#f3f4f6",
-  },
-
-  pickerItemText: {
-    flex: 1,
-    paddingRight: 10,
-    fontSize: 12,
-    color: "#374151",
-    lineHeight: 17,
-  },
-
-  pickerItemTextSelected: {
-    color: "#111827",
-    fontWeight: "700",
-  },
-
-  pickerCheck: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#000000",
-  },
-
-  pickerDoneButton: {
-    backgroundColor: "#000000",
-    height: 46,
-    borderRadius: 9,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 14,
-  },
-
-  pickerDoneText: {
-    color: "#ffffff",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-
-  /* ================================= */
   /* CONFIRMATION */
-  /* ================================= */
 
   confirmOverlay: {
     flex: 1,

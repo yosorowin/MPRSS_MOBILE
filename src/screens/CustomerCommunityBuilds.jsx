@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { useRouter } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   Modal,
   ScrollView,
   StyleSheet,
@@ -9,286 +11,29 @@ import {
   View,
 } from "react-native";
 
-import CustomerLayout from "../components/CustomerLayout";
+import { onAuthStateChanged } from "firebase/auth";
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  query,
+  runTransaction,
+  serverTimestamp,
+  where,
+} from "firebase/firestore";
 
-const initialCommunityBuilds = [
-  {
-    id: "cb-1",
-    userName: "Angela Santos",
-    motorcycleBrand: "Honda",
-    motorcycleModel: "CBR600RR",
-    motorcycleYear: 2022,
-    buildGoal: "Performance",
-    parts: [
-      {
-        name: "Akrapovic Exhaust System",
-        category: "Exhaust",
-      },
-      {
-        name: "K&N Air Filter",
-        category: "Air Intake",
-      },
-      {
-        name: "ECU Flash Tune",
-        category: "Electronics",
-      },
-      {
-        name: "Race Brake Pads",
-        category: "Brakes",
-      },
-    ],
-    compatibilityScore: 95,
-    safetyNotes:
-      "Ensure proper ECU tuning after exhaust installation. Brake upgrade recommended for increased power.",
-    dateShared: "2026-03-15",
-    upvotes: 124,
-    downvotes: 8,
-    comments: [
-      {
-        id: "c1",
-        userName: "Miguel Dela Cruz",
-        text: "Great build! How much HP gain did you see?",
-        timestamp: "03/16/2026 10:30 AM",
-      },
-      {
-        id: "c2",
-        userName: "Angela Santos",
-        text: "Around 12-15hp at the wheel!",
-        timestamp: "03/16/2026 11:20 AM",
-      },
-    ],
-    description:
-      "Track-focused performance build with emphasis on power delivery and braking.",
-    estimatedCost: 85000,
-    difficultyLevel: "Advanced",
-  },
-  {
-    id: "cb-2",
-    userName: "Miguel Dela Cruz",
-    motorcycleBrand: "Yamaha",
-    motorcycleModel: "R1",
-    motorcycleYear: 2023,
-    buildGoal: "Aesthetic",
-    parts: [
-      {
-        name: "LED Headlight Kit",
-        category: "Lighting",
-      },
-      {
-        name: "Custom Paint Job",
-        category: "Body",
-      },
-      {
-        name: "Carbon Fiber Tank Pad",
-        category: "Body",
-      },
-      {
-        name: "Smoked Windscreen",
-        category: "Body",
-      },
-    ],
-    compatibilityScore: 98,
-    safetyNotes:
-      "Ensure LED headlights are DOT approved for street use.",
-    dateShared: "2026-03-18",
-    upvotes: 89,
-    downvotes: 3,
-    comments: [
-      {
-        id: "c3",
-        userName: "Carlos Reyes",
-        text: "Looks amazing! Where did you get the paint done?",
-        timestamp: "03/19/2026 02:15 PM",
-      },
-    ],
-    description:
-      "Clean aesthetic build focusing on visual appeal while maintaining functionality.",
-    estimatedCost: 45000,
-    difficultyLevel: "Intermediate",
-  },
-  {
-    id: "cb-3",
-    userName: "Carlos Reyes",
-    motorcycleBrand: "Kawasaki",
-    motorcycleModel: "Ninja ZX-10R",
-    motorcycleYear: 2021,
-    buildGoal: "Safety",
-    parts: [
-      {
-        name: "ABS Brake System Upgrade",
-        category: "Brakes",
-      },
-      {
-        name: "Frame Sliders",
-        category: "Protection",
-      },
-      {
-        name: "LED Turn Signals",
-        category: "Lighting",
-      },
-      {
-        name: "Grip Heaters",
-        category: "Comfort",
-      },
-    ],
-    compatibilityScore: 100,
-    safetyNotes:
-      "All parts meet safety standards. Professional installation recommended for ABS system.",
-    dateShared: "2026-03-20",
-    upvotes: 156,
-    downvotes: 2,
-    comments: [
-      {
-        id: "c4",
-        userName: "Angela Santos",
-        text: "Safety first! Great choices.",
-        timestamp: "03/21/2026 09:00 AM",
-      },
-      {
-        id: "c5",
-        userName: "Miguel Dela Cruz",
-        text: "How much did the ABS upgrade cost?",
-        timestamp: "03/21/2026 10:45 AM",
-      },
-      {
-        id: "c6",
-        userName: "Carlos Reyes",
-        text: "About 35k including installation",
-        timestamp: "03/21/2026 11:30 AM",
-      },
-    ],
-    description:
-      "Comprehensive safety upgrade package for street and touring riders.",
-    estimatedCost: 62000,
-    difficultyLevel: "Advanced",
-  },
-  {
-    id: "cb-4",
-    userName: "Patricia Mendoza",
-    motorcycleBrand: "Honda",
-    motorcycleModel: "CB500X",
-    motorcycleYear: 2023,
-    buildGoal: "Performance",
-    parts: [
-      {
-        name: "Slip-On Exhaust",
-        category: "Exhaust",
-      },
-      {
-        name: "High-Flow Air Filter",
-        category: "Air Intake",
-      },
-      {
-        name: "Fuel Controller",
-        category: "Electronics",
-      },
-    ],
-    compatibilityScore: 92,
-    safetyNotes:
-      "Fuel controller required for proper air/fuel ratio after intake and exhaust modifications.",
-    dateShared: "2026-03-12",
-    upvotes: 67,
-    downvotes: 5,
-    comments: [],
-    description:
-      "Budget-friendly performance upgrades for the CB500X adventure bike.",
-    estimatedCost: 28000,
-    difficultyLevel: "Beginner",
-  },
-  {
-    id: "cb-5",
-    userName: "Marco Villanueva",
-    motorcycleBrand: "Suzuki",
-    motorcycleModel: "GSX-R750",
-    motorcycleYear: 2022,
-    buildGoal: "Performance",
-    parts: [
-      {
-        name: "Racing Suspension Kit",
-        category: "Suspension",
-      },
-      {
-        name: "Lightweight Battery",
-        category: "Electronics",
-      },
-      {
-        name: "Quick Shifter",
-        category: "Transmission",
-      },
-      {
-        name: "Titanium Exhaust",
-        category: "Exhaust",
-      },
-    ],
-    compatibilityScore: 88,
-    safetyNotes:
-      "Suspension setup requires professional tuning. Quick shifter needs ECU compatibility check.",
-    dateShared: "2026-03-10",
-    upvotes: 201,
-    downvotes: 12,
-    comments: [
-      {
-        id: "c7",
-        userName: "Carlos Reyes",
-        text: "That titanium exhaust must sound incredible!",
-        timestamp: "03/11/2026 04:20 PM",
-      },
-    ],
-    description:
-      "Race-spec build designed for track days with focus on weight reduction and handling.",
-    estimatedCost: 125000,
-    difficultyLevel: "Advanced",
-  },
-  {
-    id: "cb-6",
-    userName: "Maria Santos",
-    motorcycleBrand: "Yamaha",
-    motorcycleModel: "MT-09",
-    motorcycleYear: 2023,
-    buildGoal: "Aesthetic",
-    parts: [
-      {
-        name: "LED Strip Lights",
-        category: "Lighting",
-      },
-      {
-        name: "Custom Seat Cover",
-        category: "Comfort",
-      },
-      {
-        name: "Bar End Mirrors",
-        category: "Body",
-      },
-      {
-        name: "Fender Eliminator Kit",
-        category: "Body",
-      },
-    ],
-    compatibilityScore: 96,
-    safetyNotes:
-      "Ensure mirrors meet visibility requirements. Check local regulations for fender elimination.",
-    dateShared: "2026-03-08",
-    upvotes: 73,
-    downvotes: 4,
-    comments: [
-      {
-        id: "c8",
-        userName: "Angela Santos",
-        text: "Love the clean look!",
-        timestamp: "03/09/2026 01:40 PM",
-      },
-    ],
-    description:
-      "Street-style aesthetic modifications for a cleaner, more aggressive appearance.",
-    estimatedCost: 18000,
-    difficultyLevel: "Beginner",
-  },
-];
+import CustomerLayout from "../components/CustomerLayout";
+import { auth, db } from "../firebase";
 
 export default function CustomerCommunityBuilds() {
-  const [communityBuilds, setCommunityBuilds] = useState(
-    initialCommunityBuilds
-  );
+  const router = useRouter();
+
+  const [currentUser, setCurrentUser] = useState(null);
+  const [customerName, setCustomerName] = useState("");
+
+  const [communityBuilds, setCommunityBuilds] = useState([]);
 
   const [searchTerm, setSearchTerm] = useState("");
   const [brandFilter, setBrandFilter] = useState("All");
@@ -300,22 +45,200 @@ export default function CustomerCommunityBuilds() {
   const [userReactions, setUserReactions] = useState({});
 
   const [showCommentModal, setShowCommentModal] = useState(false);
-
   const [showSaveModal, setShowSaveModal] = useState(false);
-
   const [showServiceModal, setShowServiceModal] = useState(false);
-
   const [showFilterModal, setShowFilterModal] = useState(false);
 
   const [newComment, setNewComment] = useState("");
+
+  const [savingBuild, setSavingBuild] = useState(false);
+  const [postingComment, setPostingComment] = useState(false);
+  const [votingBuildId, setVotingBuildId] = useState(null);
+
+  // --------------------------------------------------
+  // AUTHENTICATION
+  // --------------------------------------------------
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+
+      if (!user) {
+        setCustomerName("");
+        return;
+      }
+
+      try {
+        const customerRef = doc(db, "customers", user.uid);
+        const customerSnapshot = await getDoc(customerRef);
+
+        if (customerSnapshot.exists()) {
+          const data = customerSnapshot.data();
+
+          setCustomerName(
+            data.fullName ||
+              user.displayName ||
+              user.email?.split("@")[0] ||
+              "Customer"
+          );
+        } else {
+          setCustomerName(
+            user.displayName ||
+              user.email?.split("@")[0] ||
+              "Customer"
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Error loading customer profile:",
+          error
+        );
+
+        setCustomerName(
+          user.displayName ||
+            user.email?.split("@")[0] ||
+            "Customer"
+        );
+      }
+    });
+
+    return unsubscribe;
+  }, []);
+
+  // --------------------------------------------------
+  // COMMUNITY BUILDS REAL-TIME LISTENER
+  // --------------------------------------------------
+
+  useEffect(() => {
+    const communityQuery = query(
+      collection(db, "communityBuilds")
+    );
+
+    const unsubscribe = onSnapshot(
+      communityQuery,
+      (snapshot) => {
+        const builds = snapshot.docs.map((document) => {
+          const data = document.data();
+
+          return {
+            id: document.id,
+
+            userId:
+              data.userId ||
+              data.customerId ||
+              data.customerUid ||
+              "",
+
+            userName:
+              data.userName ||
+              data.builderName ||
+              "MPRSS Customer",
+
+            motorcycleBrand:
+              data.motorcycleBrand || "",
+
+            motorcycleModel:
+              data.motorcycleModel || "",
+
+            motorcycleYear:
+              data.motorcycleYear || "",
+
+            buildGoal:
+              data.buildGoal ||
+              data.goal ||
+              "Performance",
+
+            parts: Array.isArray(data.parts)
+              ? data.parts
+              : [],
+
+            compatibilityScore:
+              Number(data.compatibilityScore) || 0,
+
+            safetyNotes:
+              data.safetyNotes || "No safety notes provided.",
+
+            dateShared:
+              formatDate(data.dateShared || data.sharedAt),
+
+            upvotes:
+              Number(data.upvotes) || 0,
+
+            downvotes:
+              Number(data.downvotes) || 0,
+
+            comments:
+              Array.isArray(data.comments)
+                ? data.comments
+                : [],
+
+            description:
+              data.description || "",
+
+            estimatedCost:
+              Number(data.estimatedCost) || 0,
+
+            difficultyLevel:
+              data.difficultyLevel || "Intermediate",
+
+            reactionByUser:
+              data.reactionByUser || {},
+          };
+        });
+
+        setCommunityBuilds(builds);
+      },
+      (error) => {
+        console.error(
+          "Error listening to community builds:",
+          error
+        );
+
+        Alert.alert(
+          "Community Builds",
+          "Unable to load community builds right now."
+        );
+      }
+    );
+
+    return unsubscribe;
+  }, []);
+
+  // --------------------------------------------------
+  // LOAD CURRENT USER'S REACTIONS
+  // --------------------------------------------------
+
+  useEffect(() => {
+    if (!currentUser || communityBuilds.length === 0) {
+      return;
+    }
+
+    const reactions = {};
+
+    communityBuilds.forEach((build) => {
+      if (
+        build.reactionByUser &&
+        build.reactionByUser[currentUser.uid]
+      ) {
+        reactions[build.id] =
+          build.reactionByUser[currentUser.uid];
+      }
+    });
+
+    setUserReactions(reactions);
+  }, [currentUser, communityBuilds]);
+
+  // --------------------------------------------------
+  // FILTER DATA
+  // --------------------------------------------------
 
   const brands = useMemo(() => {
     return [
       "All",
       ...new Set(
-        communityBuilds.map(
-          (build) => build.motorcycleBrand
-        )
+        communityBuilds
+          .map((build) => build.motorcycleBrand)
+          .filter(Boolean)
       ),
     ];
   }, [communityBuilds]);
@@ -332,9 +255,9 @@ export default function CustomerCommunityBuilds() {
     return [
       "All",
       ...new Set(
-        builds.map(
-          (build) => build.motorcycleModel
-        )
+        builds
+          .map((build) => build.motorcycleModel)
+          .filter(Boolean)
       ),
     ];
   }, [communityBuilds, brandFilter]);
@@ -347,9 +270,9 @@ export default function CustomerCommunityBuilds() {
   ];
 
   const filteredBuilds = useMemo(() => {
-    const search = searchTerm.toLowerCase();
+    const search = searchTerm.trim().toLowerCase();
 
-    return communityBuilds
+    return [...communityBuilds]
       .filter(
         (build) =>
           brandFilter === "All" ||
@@ -365,8 +288,12 @@ export default function CustomerCommunityBuilds() {
           goalFilter === "All" ||
           build.buildGoal === goalFilter
       )
-      .filter(
-        (build) =>
+      .filter((build) => {
+        if (!search) {
+          return true;
+        }
+
+        return (
           build.motorcycleBrand
             .toLowerCase()
             .includes(search) ||
@@ -378,8 +305,12 @@ export default function CustomerCommunityBuilds() {
             .includes(search) ||
           build.userName
             .toLowerCase()
+            .includes(search) ||
+          build.buildGoal
+            .toLowerCase()
             .includes(search)
-      )
+        );
+      })
       .sort(
         (a, b) =>
           b.upvotes -
@@ -394,124 +325,388 @@ export default function CustomerCommunityBuilds() {
     goalFilter,
   ]);
 
-  const handleVote = (buildId, voteType) => {
-    const currentReaction = userReactions[buildId];
+  // --------------------------------------------------
+  // VOTING
+  // --------------------------------------------------
 
-    const nextReactions = {
-      ...userReactions,
-    };
-
-    if (currentReaction === voteType) {
-      delete nextReactions[buildId];
-    } else {
-      nextReactions[buildId] = voteType;
-    }
-
-    const updatedBuilds = communityBuilds.map(
-      (build) => {
-        if (build.id !== buildId) {
-          return build;
-        }
-
-        let upvotes = build.upvotes;
-        let downvotes = build.downvotes;
-
-        if (currentReaction === "upvote") {
-          upvotes--;
-        }
-
-        if (currentReaction === "downvote") {
-          downvotes--;
-        }
-
-        if (
-          nextReactions[buildId] === "upvote"
-        ) {
-          upvotes++;
-        }
-
-        if (
-          nextReactions[buildId] === "downvote"
-        ) {
-          downvotes++;
-        }
-
-        return {
-          ...build,
-          upvotes,
-          downvotes,
-        };
-      }
-    );
-
-    setCommunityBuilds(updatedBuilds);
-    setUserReactions(nextReactions);
-
-    if (selectedBuild) {
-      const updatedSelected =
-        updatedBuilds.find(
-          (build) => build.id === buildId
-        );
-
-      setSelectedBuild(updatedSelected);
-    }
-  };
-
-  const handleAddComment = () => {
-    if (
-      !newComment.trim() ||
-      !selectedBuild
-    ) {
+  const handleVote = async (buildId, voteType) => {
+    if (!currentUser) {
+      Alert.alert(
+        "Sign In Required",
+        "Please sign in to vote on community builds."
+      );
       return;
     }
 
-    const comment = {
-      id: `comment-${Date.now()}`,
-      userName: "Carlos Reyes",
-      text: newComment.trim(),
-      timestamp: new Date().toLocaleString(),
-    };
+    if (votingBuildId) {
+      return;
+    }
 
-    const updatedBuilds =
-      communityBuilds.map((build) => {
-        if (build.id !== selectedBuild.id) {
-          return build;
+    setVotingBuildId(buildId);
+
+    try {
+      const buildRef = doc(
+        db,
+        "communityBuilds",
+        buildId
+      );
+
+      await runTransaction(db, async (transaction) => {
+        const snapshot =
+          await transaction.get(buildRef);
+
+        if (!snapshot.exists()) {
+          throw new Error(
+            "Community build no longer exists."
+          );
         }
 
-        return {
-          ...build,
+        const data = snapshot.data();
+
+        const reactionByUser = {
+          ...(data.reactionByUser || {}),
+        };
+
+        const currentReaction =
+          reactionByUser[currentUser.uid] || null;
+
+        let upvotes = Number(data.upvotes) || 0;
+        let downvotes =
+          Number(data.downvotes) || 0;
+
+        if (currentReaction === voteType) {
+          delete reactionByUser[currentUser.uid];
+
+          if (voteType === "upvote") {
+            upvotes = Math.max(0, upvotes - 1);
+          }
+
+          if (voteType === "downvote") {
+            downvotes = Math.max(0, downvotes - 1);
+          }
+        } else {
+          if (currentReaction === "upvote") {
+            upvotes = Math.max(0, upvotes - 1);
+          }
+
+          if (currentReaction === "downvote") {
+            downvotes = Math.max(0, downvotes - 1);
+          }
+
+          reactionByUser[currentUser.uid] =
+            voteType;
+
+          if (voteType === "upvote") {
+            upvotes += 1;
+          }
+
+          if (voteType === "downvote") {
+            downvotes += 1;
+          }
+        }
+
+        transaction.update(buildRef, {
+          upvotes,
+          downvotes,
+          reactionByUser,
+          updatedAt: serverTimestamp(),
+        });
+      });
+    } catch (error) {
+      console.error(
+        "Error updating community vote:",
+        error
+      );
+
+      Alert.alert(
+        "Vote Failed",
+        "Unable to update your vote. Please try again."
+      );
+    } finally {
+      setVotingBuildId(null);
+    }
+  };
+
+  // --------------------------------------------------
+  // ADD COMMENT
+  // --------------------------------------------------
+
+  const handleAddComment = async () => {
+    if (!newComment.trim() || !selectedBuild) {
+      return;
+    }
+
+    if (!currentUser) {
+      Alert.alert(
+        "Sign In Required",
+        "Please sign in to comment."
+      );
+      return;
+    }
+
+    if (postingComment) {
+      return;
+    }
+
+    setPostingComment(true);
+
+    try {
+      const comment = {
+        id: `comment-${currentUser.uid}-${Date.now()}`,
+        userId: currentUser.uid,
+        userName:
+          customerName ||
+          currentUser.displayName ||
+          currentUser.email?.split("@")[0] ||
+          "Customer",
+        text: newComment.trim(),
+        timestamp: new Date().toLocaleString(),
+      };
+
+      const buildRef = doc(
+        db,
+        "communityBuilds",
+        selectedBuild.id
+      );
+
+      await runTransaction(db, async (transaction) => {
+        const snapshot =
+          await transaction.get(buildRef);
+
+        if (!snapshot.exists()) {
+          throw new Error(
+            "Community build no longer exists."
+          );
+        }
+
+        const data = snapshot.data();
+
+        const existingComments =
+          Array.isArray(data.comments)
+            ? data.comments
+            : [];
+
+        transaction.update(buildRef, {
           comments: [
-            ...build.comments,
+            ...existingComments,
             comment,
           ],
-        };
+          updatedAt: serverTimestamp(),
+        });
       });
 
-    setCommunityBuilds(updatedBuilds);
+      setNewComment("");
+      setShowCommentModal(false);
+    } catch (error) {
+      console.error(
+        "Error adding community comment:",
+        error
+      );
 
-    setSelectedBuild(
-      updatedBuilds.find(
-        (build) =>
-          build.id === selectedBuild.id
+      Alert.alert(
+        "Comment Failed",
+        "Unable to post your comment. Please try again."
+      );
+    } finally {
+      setPostingComment(false);
+    }
+  };
+
+  // --------------------------------------------------
+  // SAVE TO MY BUILDS
+  // --------------------------------------------------
+
+  const handleSaveToBuild = async () => {
+    if (!selectedBuild || !currentUser) {
+      return;
+    }
+
+    if (savingBuild) {
+      return;
+    }
+
+    setSavingBuild(true);
+
+    try {
+      const existingBuildsQuery = query(
+        collection(db, "builds"),
+        where(
+          "customerId",
+          "==",
+          currentUser.uid
+        )
+      );
+
+      const existingSnapshot =
+        await new Promise((resolve, reject) => {
+          const unsubscribe = onSnapshot(
+            existingBuildsQuery,
+            (snapshot) => {
+              unsubscribe();
+              resolve(snapshot);
+            },
+            (error) => {
+              unsubscribe();
+              reject(error);
+            }
+          );
+        });
+
+      const alreadySaved =
+        existingSnapshot.docs.some((document) => {
+          const data = document.data();
+
+          return (
+            data.communityBuildId ===
+            selectedBuild.id
+          );
+        });
+
+      if (alreadySaved) {
+        setShowSaveModal(false);
+
+        Alert.alert(
+          "Already Saved",
+          "This community build is already in your My Builds collection."
+        );
+
+        return;
+      }
+
+      const parts = Array.isArray(
+        selectedBuild.parts
       )
-    );
+        ? selectedBuild.parts.map((part) => {
+            if (typeof part === "string") {
+              return part;
+            }
 
-    setNewComment("");
-    setShowCommentModal(false);
+            return part?.name || "Unnamed Part";
+          })
+        : [];
+
+      await addDoc(collection(db, "builds"), {
+        customerId: currentUser.uid,
+        customerUid: currentUser.uid,
+        customerEmail: currentUser.email || "",
+
+        communityBuildId: selectedBuild.id,
+
+        motorcycleId: null,
+
+        motorcycleName:
+          `${selectedBuild.motorcycleBrand} ${selectedBuild.motorcycleModel}`.trim(),
+
+        motorcycleBrand:
+          selectedBuild.motorcycleBrand,
+
+        motorcycleModel:
+          selectedBuild.motorcycleModel,
+
+        motorcycleYear:
+          selectedBuild.motorcycleYear,
+
+        buildName:
+          `${selectedBuild.motorcycleBrand} ${selectedBuild.motorcycleModel} - ${selectedBuild.buildGoal}`,
+
+        goal: selectedBuild.buildGoal,
+
+        parts,
+
+        aiResult:
+          selectedBuild.description ||
+          "Community build shared by another MPRSS rider.",
+
+        notes:
+          selectedBuild.safetyNotes || "",
+
+        compatibilityScore:
+          selectedBuild.compatibilityScore,
+
+        estimatedCost:
+          selectedBuild.estimatedCost,
+
+        difficultyLevel:
+          selectedBuild.difficultyLevel,
+
+        dateSaved:
+          new Date().toISOString().split("T")[0],
+
+        source: "community",
+
+        sourceUserId:
+          selectedBuild.userId || null,
+
+        sourceUserName:
+          selectedBuild.userName || "",
+
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      setShowSaveModal(false);
+
+      Alert.alert(
+        "Build Saved",
+        "This community build has been added to My Builds."
+      );
+    } catch (error) {
+      console.error(
+        "Error saving community build:",
+        error
+      );
+
+      Alert.alert(
+        "Save Failed",
+        "Unable to save this build. Please try again."
+      );
+    } finally {
+      setSavingBuild(false);
+    }
   };
 
-  const handleSaveToBuild = () => {
-    setShowSaveModal(false);
-  };
+  // --------------------------------------------------
+  // REQUEST SERVICE
+  // --------------------------------------------------
 
   const handleServiceRequest = () => {
     setShowServiceModal(false);
+
+    if (!selectedBuild) {
+      return;
+    }
+
+    router.push("/services");
   };
+
+  // --------------------------------------------------
+  // FILTERS
+  // --------------------------------------------------
 
   const clearFilters = () => {
     setBrandFilter("All");
     setModelFilter("All");
     setGoalFilter("All");
+  };
+
+  // --------------------------------------------------
+  // HELPER
+  // --------------------------------------------------
+
+  const getPartName = (part) => {
+    if (typeof part === "string") {
+      return part;
+    }
+
+    return part?.name || "Unnamed Part";
+  };
+
+  const getPartCategory = (part) => {
+    if (typeof part === "string") {
+      return "Part";
+    }
+
+    return part?.category || "Part";
   };
 
   return (
@@ -530,9 +725,10 @@ export default function CustomerCommunityBuilds() {
               </Text>
 
               <Text style={styles.introSubtitle}>
-                Discover motorcycle setups shared by the MPRSS
-                community, from performance upgrades to safety
-                and aesthetic builds.
+                Discover motorcycle setups shared by
+                the MPRSS community, from performance
+                upgrades to safety and aesthetic
+                builds.
               </Text>
             </View>
 
@@ -562,7 +758,9 @@ export default function CustomerCommunityBuilds() {
                   ☷
                 </Text>
 
-                <Text style={styles.filterButtonText}>
+                <Text
+                  style={styles.filterButtonText}
+                >
                   Filters
                 </Text>
 
@@ -601,14 +799,22 @@ export default function CustomerCommunityBuilds() {
                 key={build.id}
                 style={styles.buildCard}
               >
-                <View style={styles.buildCardHeader}>
-                  <View style={styles.buildHeaderInfo}>
-                    <Text style={styles.buildCardTitle}>
+                <View
+                  style={styles.buildCardHeader}
+                >
+                  <View
+                    style={styles.buildHeaderInfo}
+                  >
+                    <Text
+                      style={styles.buildCardTitle}
+                    >
                       {build.motorcycleBrand}{" "}
                       {build.motorcycleModel}
                     </Text>
 
-                    <Text style={styles.builderName}>
+                    <Text
+                      style={styles.builderName}
+                    >
                       by {build.userName}
                     </Text>
                   </View>
@@ -619,7 +825,8 @@ export default function CustomerCommunityBuilds() {
                       build.buildGoal ===
                         "Performance" &&
                         styles.performanceBadge,
-                      build.buildGoal === "Safety" &&
+                      build.buildGoal ===
+                        "Safety" &&
                         styles.safetyBadge,
                       build.buildGoal ===
                         "Aesthetic" &&
@@ -627,7 +834,9 @@ export default function CustomerCommunityBuilds() {
                     ]}
                   >
                     <Text
-                      style={styles.goalBadgeText}
+                      style={
+                        styles.goalBadgeText
+                      }
                     >
                       {build.buildGoal}
                     </Text>
@@ -658,10 +867,15 @@ export default function CustomerCommunityBuilds() {
                 <View style={styles.buildFooter}>
                   <View style={styles.voteGroup}>
                     <TouchableOpacity
+                      disabled={
+                        votingBuildId ===
+                        build.id
+                      }
                       style={[
                         styles.voteButton,
-                        userReactions[build.id] ===
-                          "upvote" &&
+                        userReactions[
+                          build.id
+                        ] === "upvote" &&
                           styles.upvoteActive,
                       ]}
                       onPress={() =>
@@ -671,7 +885,9 @@ export default function CustomerCommunityBuilds() {
                         )
                       }
                     >
-                      <Text style={styles.voteIcon}>
+                      <Text
+                        style={styles.voteIcon}
+                      >
                         ↑
                       </Text>
 
@@ -689,10 +905,15 @@ export default function CustomerCommunityBuilds() {
                     </TouchableOpacity>
 
                     <TouchableOpacity
+                      disabled={
+                        votingBuildId ===
+                        build.id
+                      }
                       style={[
                         styles.voteButton,
-                        userReactions[build.id] ===
-                          "downvote" &&
+                        userReactions[
+                          build.id
+                        ] === "downvote" &&
                           styles.downvoteActive,
                       ]}
                       onPress={() =>
@@ -702,7 +923,9 @@ export default function CustomerCommunityBuilds() {
                         )
                       }
                     >
-                      <Text style={styles.voteIcon}>
+                      <Text
+                        style={styles.voteIcon}
+                      >
                         ↓
                       </Text>
 
@@ -772,14 +995,21 @@ export default function CustomerCommunityBuilds() {
             {/* Details */}
             <View style={styles.detailsCard}>
               <View style={styles.detailsHeader}>
-                <View style={styles.detailsHeaderInfo}>
-                  <Text style={styles.detailsTitle}>
+                <View
+                  style={styles.detailsHeaderInfo}
+                >
+                  <Text
+                    style={styles.detailsTitle}
+                  >
                     {selectedBuild.motorcycleBrand}{" "}
                     {selectedBuild.motorcycleModel}
                   </Text>
 
-                  <Text style={styles.detailsSubtitle}>
-                    {selectedBuild.motorcycleYear} • by{" "}
+                  <Text
+                    style={styles.detailsSubtitle}
+                  >
+                    {selectedBuild.motorcycleYear}{" "}
+                    • by{" "}
                     {selectedBuild.userName}
                   </Text>
                 </View>
@@ -808,48 +1038,80 @@ export default function CustomerCommunityBuilds() {
                 </View>
               </View>
 
-              <Text style={styles.detailsDescription}>
+              <Text
+                style={styles.detailsDescription}
+              >
                 {selectedBuild.description}
               </Text>
 
               <View style={styles.detailsStats}>
-                <View style={styles.detailStatBox}>
-                  <Text style={styles.detailStatLabel}>
+                <View
+                  style={styles.detailStatBox}
+                >
+                  <Text
+                    style={styles.detailStatLabel}
+                  >
                     Compatibility
                   </Text>
 
-                  <Text style={styles.detailStatValue}>
+                  <Text
+                    style={styles.detailStatValue}
+                  >
                     {selectedBuild.compatibilityScore}%
                   </Text>
                 </View>
 
-                <View style={styles.detailStatBox}>
-                  <Text style={styles.detailStatLabel}>
+                <View
+                  style={styles.detailStatBox}
+                >
+                  <Text
+                    style={styles.detailStatLabel}
+                  >
                     Est. Cost
                   </Text>
 
-                  <Text style={styles.detailStatValue}>
+                  <Text
+                    style={styles.detailStatValue}
+                  >
                     ₱
                     {selectedBuild.estimatedCost.toLocaleString()}
                   </Text>
                 </View>
 
-                <View style={styles.detailStatBox}>
-                  <Text style={styles.detailStatLabel}>
+                <View
+                  style={styles.detailStatBox}
+                >
+                  <Text
+                    style={styles.detailStatLabel}
+                  >
                     Difficulty
                   </Text>
 
-                  <Text style={styles.detailStatValueSmall}>
-                    {selectedBuild.difficultyLevel}
+                  <Text
+                    style={
+                      styles.detailStatValueSmall
+                    }
+                  >
+                    {
+                      selectedBuild.difficultyLevel
+                    }
                   </Text>
                 </View>
 
-                <View style={styles.detailStatBox}>
-                  <Text style={styles.detailStatLabel}>
+                <View
+                  style={styles.detailStatBox}
+                >
+                  <Text
+                    style={styles.detailStatLabel}
+                  >
                     Date Shared
                   </Text>
 
-                  <Text style={styles.detailStatValueSmall}>
+                  <Text
+                    style={
+                      styles.detailStatValueSmall
+                    }
+                  >
                     {selectedBuild.dateShared}
                   </Text>
                 </View>
@@ -865,10 +1127,14 @@ export default function CustomerCommunityBuilds() {
               {selectedBuild.parts.map(
                 (part, index) => (
                   <View
-                    key={index}
-                    style={styles.detailPartRow}
+                    key={`${selectedBuild.id}-part-${index}`}
+                    style={
+                      styles.detailPartRow
+                    }
                   >
-                    <View style={styles.partIcon}>
+                    <View
+                      style={styles.partIcon}
+                    >
                       <Text
                         style={
                           styles.partIconText
@@ -878,15 +1144,21 @@ export default function CustomerCommunityBuilds() {
                       </Text>
                     </View>
 
-                    <View style={styles.partInfo}>
-                      <Text style={styles.partName}>
-                        {part.name}
+                    <View
+                      style={styles.partInfo}
+                    >
+                      <Text
+                        style={styles.partName}
+                      >
+                        {getPartName(part)}
                       </Text>
 
                       <Text
-                        style={styles.partCategory}
+                        style={
+                          styles.partCategory
+                        }
                       >
-                        {part.category}
+                        {getPartCategory(part)}
                       </Text>
                     </View>
                   </View>
@@ -896,11 +1168,15 @@ export default function CustomerCommunityBuilds() {
 
             {/* Safety */}
             <View style={styles.safetyNotesBox}>
-              <Text style={styles.safetyNotesTitle}>
+              <Text
+                style={styles.safetyNotesTitle}
+              >
                 ⚠ Safety Notes
               </Text>
 
-              <Text style={styles.safetyNotesText}>
+              <Text
+                style={styles.safetyNotesText}
+              >
                 {selectedBuild.safetyNotes}
               </Text>
             </View>
@@ -909,6 +1185,10 @@ export default function CustomerCommunityBuilds() {
             <View style={styles.detailsCard}>
               <View style={styles.detailVoteRow}>
                 <TouchableOpacity
+                  disabled={
+                    votingBuildId ===
+                    selectedBuild.id
+                  }
                   style={[
                     styles.detailVoteButton,
                     userReactions[
@@ -941,6 +1221,10 @@ export default function CustomerCommunityBuilds() {
                 </TouchableOpacity>
 
                 <TouchableOpacity
+                  disabled={
+                    votingBuildId ===
+                    selectedBuild.id
+                  }
                   style={[
                     styles.detailVoteButton,
                     userReactions[
@@ -983,7 +1267,9 @@ export default function CustomerCommunityBuilds() {
                   ▣
                 </Text>
 
-                <Text style={styles.darkButtonText}>
+                <Text
+                  style={styles.darkButtonText}
+                >
                   Save to My Builds
                 </Text>
               </TouchableOpacity>
@@ -998,7 +1284,9 @@ export default function CustomerCommunityBuilds() {
                   →
                 </Text>
 
-                <Text style={styles.darkButtonText}>
+                <Text
+                  style={styles.darkButtonText}
+                >
                   Request Service
                 </Text>
               </TouchableOpacity>
@@ -1006,7 +1294,9 @@ export default function CustomerCommunityBuilds() {
 
             {/* Comments */}
             <View style={styles.detailsCard}>
-              <View style={styles.commentsHeader}>
+              <View
+                style={styles.commentsHeader}
+              >
                 <Text style={styles.sectionTitle}>
                   Comments (
                   {selectedBuild.comments.length}
@@ -1032,23 +1322,31 @@ export default function CustomerCommunityBuilds() {
               {selectedBuild.comments.length ===
               0 ? (
                 <Text style={styles.noComments}>
-                  No comments yet. Be the first to
-                  comment!
+                  No comments yet. Be the first
+                  to comment!
                 </Text>
               ) : (
                 selectedBuild.comments.map(
-                  (comment) => (
+                  (comment, index) => (
                     <View
-                      key={comment.id}
+                      key={
+                        comment.id ||
+                        `${selectedBuild.id}-comment-${index}`
+                      }
                       style={styles.commentCard}
                     >
-                      <View style={styles.commentTop}>
+                      <View
+                        style={
+                          styles.commentTop
+                        }
+                      >
                         <Text
                           style={
                             styles.commentUser
                           }
                         >
-                          {comment.userName}
+                          {comment.userName ||
+                            "Customer"}
                         </Text>
 
                         <Text
@@ -1056,7 +1354,8 @@ export default function CustomerCommunityBuilds() {
                             styles.commentDate
                           }
                         >
-                          {comment.timestamp}
+                          {comment.timestamp ||
+                            ""}
                         </Text>
                       </View>
 
@@ -1219,7 +1518,9 @@ export default function CustomerCommunityBuilds() {
                 }
               >
                 <Text
-                  style={styles.applyButtonText}
+                  style={
+                    styles.applyButtonText
+                  }
                 >
                   Apply Filters
                 </Text>
@@ -1279,13 +1580,22 @@ export default function CustomerCommunityBuilds() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={styles.applyButton}
+                style={[
+                  styles.applyButton,
+                  postingComment &&
+                    styles.disabledButton,
+                ]}
+                disabled={postingComment}
                 onPress={handleAddComment}
               >
                 <Text
-                  style={styles.applyButtonText}
+                  style={
+                    styles.applyButtonText
+                  }
                 >
-                  Post Comment
+                  {postingComment
+                    ? "Posting..."
+                    : "Post Comment"}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1320,9 +1630,12 @@ export default function CustomerCommunityBuilds() {
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.modalDescription}>
-              This will save a copy of this community
-              build to your personal builds collection.
+            <Text
+              style={styles.modalDescription}
+            >
+              This will save a copy of this
+              community build to your personal
+              builds collection.
             </Text>
 
             <View style={styles.modalActions}>
@@ -1338,13 +1651,22 @@ export default function CustomerCommunityBuilds() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={styles.applyButton}
+                style={[
+                  styles.applyButton,
+                  savingBuild &&
+                    styles.disabledButton,
+                ]}
+                disabled={savingBuild}
                 onPress={handleSaveToBuild}
               >
                 <Text
-                  style={styles.applyButtonText}
+                  style={
+                    styles.applyButtonText
+                  }
                 >
-                  Save Build
+                  {savingBuild
+                    ? "Saving..."
+                    : "Save Build"}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1379,10 +1701,14 @@ export default function CustomerCommunityBuilds() {
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.modalDescription}>
-              This will create a service request to
-              install the parts from this community
-              build on your motorcycle.
+            <Text
+              style={styles.modalDescription}
+            >
+              This will take you to Service
+              Requests where you can select your
+              motorcycle and schedule installation
+              of the parts from this community
+              build.
             </Text>
 
             <View style={styles.modalActions}>
@@ -1402,7 +1728,9 @@ export default function CustomerCommunityBuilds() {
                 onPress={handleServiceRequest}
               >
                 <Text
-                  style={styles.applyButtonText}
+                  style={
+                    styles.applyButtonText
+                  }
                 >
                   Continue
                 </Text>
@@ -1414,6 +1742,39 @@ export default function CustomerCommunityBuilds() {
     </CustomerLayout>
   );
 }
+
+// --------------------------------------------------
+// HELPERS
+// --------------------------------------------------
+
+const formatDate = (value) => {
+  if (!value) {
+    return "—";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (value?.toDate) {
+    return value
+      .toDate()
+      .toISOString()
+      .split("T")[0];
+  }
+
+  if (value instanceof Date) {
+    return value
+      .toISOString()
+      .split("T")[0];
+  }
+
+  return "—";
+};
+
+// --------------------------------------------------
+// STYLES
+// --------------------------------------------------
 
 const styles = StyleSheet.create({
   container: {
@@ -2090,6 +2451,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#111827",
     alignItems: "center",
     justifyContent: "center",
+  },
+
+  disabledButton: {
+    opacity: 0.6,
   },
 
   applyButtonText: {
