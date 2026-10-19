@@ -14,8 +14,6 @@ import {
 import {
   collection,
   onSnapshot,
-  query,
-  where,
 } from "firebase/firestore";
 
 import { db } from "../firebase";
@@ -44,39 +42,62 @@ export default function CustomerPartsCatalog() {
 
   // =========================================================
   // LOAD CUSTOMER-VISIBLE INVENTORY FROM FIRESTORE
+  // AdminInventory writes to the "inventory" collection and
+  // uses photoUrl plus a brand -> models compatibility object.
   // =========================================================
   useEffect(() => {
-    const inventoryQuery = query(
-      collection(db, "inventory"),
-      where("visibleToCustomers", "==", true)
-    );
-
     const unsubscribe = onSnapshot(
-      inventoryQuery,
+      collection(db, "inventory"),
       (snapshot) => {
-        const data = snapshot.docs.map((inventoryDoc) => {
-          const item = inventoryDoc.data();
+        const data = snapshot.docs
+          .map((inventoryDoc) => {
+            const item = inventoryDoc.data();
 
-          return {
-            id: inventoryDoc.id,
-            name: item.name || "Unnamed Part",
-            brand: item.brand || "MPRSS",
-            category: item.category || "General",
-            quantity: Number(item.quantity || 0),
-            price: Number(item.price || 0),
+            // Hide items explicitly marked as not visible. Treat older
+            // records without this field as hidden only if explicitly false.
+            if (item.visibleToCustomers === false) return null;
 
-            compatibleModels: Array.isArray(
-              item.compatibleModels
-            )
-              ? item.compatibleModels
-              : ["All Models"],
+            let compatibleModels = [];
+            if (item.compatibleAllMotorcycles) {
+              compatibleModels = ["All Motorcycles"];
+            } else if (
+              item.compatibleModels &&
+              typeof item.compatibleModels === "object" &&
+              !Array.isArray(item.compatibleModels)
+            ) {
+              compatibleModels = Object.entries(item.compatibleModels)
+                .flatMap(([brandName, models]) =>
+                  (Array.isArray(models) ? models : []).map(
+                    (modelName) => `${brandName} ${modelName}`
+                  )
+                );
+            } else if (Array.isArray(item.compatibleModels)) {
+              compatibleModels = item.compatibleModels;
+            }
 
-            safetyNotes: item.safetyNotes || "",
+            if (compatibleModels.length === 0) {
+              compatibleModels = Array.isArray(item.compatibleBrands)
+                ? item.compatibleBrands
+                : ["Compatibility not specified"];
+            }
 
-            // AdminInventory currently does not save an image.
-            image: item.image || "",
-          };
-        });
+            const compatibleBrands = Array.isArray(item.compatibleBrands)
+              ? item.compatibleBrands
+              : [];
+
+            return {
+              id: inventoryDoc.id,
+              name: item.name || "Unnamed Part",
+              brand: item.brand || compatibleBrands[0] || "MPRSS",
+              category: item.category || "General",
+              quantity: Number(item.quantity || 0),
+              price: Number(item.price || 0),
+              compatibleModels,
+              safetyNotes: item.safetyNotes || "",
+              image: item.photoUrl || item.image || "",
+            };
+          })
+          .filter(Boolean);
 
         setInventory(data);
         setLoading(false);
@@ -216,42 +237,41 @@ export default function CustomerPartsCatalog() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* FIND PARTS */}
+        {/* SEARCH AND FILTER */}
         <View style={styles.findPartsCard}>
-          <Text style={styles.findPartsTitle}>
-            Find parts for your motorcycle
-          </Text>
-
-          <Text style={styles.findPartsDescription}>
-            Discover compatible parts, check
-            availability, and review safety notes
-            before adding them to your build.
-          </Text>
-
           <View style={styles.searchBox}>
-            <Text style={styles.searchIcon}>
-              🔍
-            </Text>
+            <View style={styles.searchIcon}>
+              <View style={styles.searchIconCircle} />
+              <View style={styles.searchIconHandle} />
+            </View>
 
             <TextInput
               value={searchTerm}
               onChangeText={setSearchTerm}
-              placeholder="Search parts, brands, or categories"
+              placeholder="Search parts or brands"
               placeholderTextColor="#9ca3af"
               style={styles.searchInput}
             />
-          </View>
 
-          <TouchableOpacity
-            style={styles.filterButton}
-            onPress={() =>
-              setShowFilterMenu(true)
-            }
-          >
-            <Text style={styles.filterButtonText}>
-              ⚙ Filters
-            </Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.searchFilterButton}
+              onPress={() => setShowFilterMenu(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Filter parts"
+            >
+              <View style={styles.filterIcon}>
+                <View style={styles.filterLine}>
+                  <View style={[styles.filterKnob, styles.filterKnobOne]} />
+                </View>
+                <View style={styles.filterLine}>
+                  <View style={[styles.filterKnob, styles.filterKnobTwo]} />
+                </View>
+                <View style={styles.filterLine}>
+                  <View style={[styles.filterKnob, styles.filterKnobThree]} />
+                </View>
+              </View>
+            </TouchableOpacity>
+          </View>
 
           {(categoryFilter !== "All" ||
             brandFilter !== "All") && (
@@ -321,11 +341,11 @@ export default function CustomerPartsCatalog() {
             {/* RESULTS */}
             <View style={styles.resultsHeader}>
               <Text style={styles.resultsTitle}>
-                Available Parts
+                Parts
               </Text>
 
               <Text style={styles.resultsCount}>
-                {filteredParts.length} parts found
+                {filteredParts.length} found
               </Text>
             </View>
 
@@ -424,7 +444,7 @@ export default function CustomerPartsCatalog() {
                           ]}
                         >
                           {part.quantity > 0
-                            ? `In Stock: ${part.quantity}`
+                            ? `In stock · ${part.quantity}`
                             : "Out of Stock"}
                         </Text>
                       </View>
@@ -446,14 +466,14 @@ export default function CustomerPartsCatalog() {
                             styles.compatibilityLabel
                           }
                         >
-                          Compatible With
+                          Fits
                         </Text>
 
                         <Text
                           style={
                             styles.compatibilityText
                           }
-                        >
+                        numberOfLines={2}>
                           {part.compatibleModels.join(
                             ", "
                           )}
@@ -470,14 +490,14 @@ export default function CustomerPartsCatalog() {
                               styles.safetyTitle
                             }
                           >
-                            ⚠ Safety Note
+                            ⚠ Safety
                           </Text>
 
                           <Text
                             style={
                               styles.safetyText
                             }
-                          >
+                          numberOfLines={2}>
                             {part.safetyNotes}
                           </Text>
                         </View>
@@ -499,7 +519,7 @@ export default function CustomerPartsCatalog() {
                               styles.detailsButtonText
                             }
                           >
-                            View Details
+                            Details
                           </Text>
                         </TouchableOpacity>
 
@@ -533,24 +553,6 @@ export default function CustomerPartsCatalog() {
           </>
         )}
 
-        {/* CURRENT BUILD */}
-        <View style={styles.buildSummary}>
-          <Text style={styles.buildLabel}>
-            CURRENT BUILD
-          </Text>
-
-          <Text style={styles.buildName}>
-            {selectedBuild}
-          </Text>
-
-          <Text style={styles.buildParts}>
-            {partsInBuild.length} part
-            {partsInBuild.length !== 1
-              ? "s"
-              : ""}{" "}
-            added
-          </Text>
-        </View>
       </ScrollView>
 
       {/* FILTER MODAL */}
@@ -797,7 +799,7 @@ export default function CustomerPartsCatalog() {
                         styles.detailSafetyTitle
                       }
                     >
-                      ⚠ Safety Notes
+                      ⚠ Safetys
                     </Text>
 
                     <Text
@@ -999,31 +1001,87 @@ const styles = StyleSheet.create({
   },
 
   searchIcon: {
-    fontSize: 16,
-    marginRight: 8,
+    width: 20,
+    height: 22,
+    marginRight: 9,
+    justifyContent: "center",
+    position: "relative",
+  },
+
+  searchIconCircle: {
+    width: 13,
+    height: 13,
+    borderWidth: 2,
+    borderColor: "#111827",
+    borderRadius: 7,
+    position: "absolute",
+    top: 2,
+    left: 1,
+  },
+
+  searchIconHandle: {
+    width: 7,
+    height: 2,
+    backgroundColor: "#111827",
+    borderRadius: 1,
+    position: "absolute",
+    top: 15,
+    left: 12,
+    transform: [{ rotate: "45deg" }],
+  },
+
+  filterIcon: {
+    width: 19,
+    height: 18,
+    justifyContent: "space-between",
+    paddingVertical: 2,
+  },
+
+  filterLine: {
+    height: 2,
+    width: 18,
+    backgroundColor: "#111827",
+    borderRadius: 1,
+    justifyContent: "center",
+  },
+
+  filterKnob: {
+    position: "absolute",
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "#ffffff",
+    borderWidth: 1.5,
+    borderColor: "#111827",
+  },
+
+  filterKnobOne: {
+    left: 4,
+  },
+
+  filterKnobTwo: {
+    left: 10,
+  },
+
+  filterKnobThree: {
+    left: 6,
   },
 
   searchInput: {
     flex: 1,
+    minWidth: 0,
     fontSize: 14,
     color: "#111827",
   },
 
-  filterButton: {
-    alignSelf: "flex-start",
-    marginTop: 12,
-    paddingHorizontal: 15,
-    height: 42,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#d1d5db",
+  searchFilterButton: {
+    width: 38,
+    height: 38,
+    marginLeft: 8,
+    borderLeftWidth: 1,
+    borderLeftColor: "#e5e7eb",
+    alignItems: "center",
     justifyContent: "center",
-  },
-
-  filterButtonText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#374151",
   },
 
   activeFilters: {

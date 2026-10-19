@@ -1,0 +1,10 @@
+ src/components/CustomerLayout.jsx    | 1000 [32m++++++++++++++[m[31m------[m
+ src/data/serviceRequestStore.js      |   14 [32m+[m
+ src/screens/CustomerAIAssistant.jsx  | 1027 [32m+++++++++++++[m[31m-------[m
+ src/screens/CustomerDashboard.jsx    |  781 [32m+++++++++[m[31m-------[m
+ src/screens/CustomerMessages.jsx     |   85 [32m+[m[31m-[m
+ src/screens/CustomerMotorcycles.jsx  | 1714 [32m++++++++++++++++++++++[m[31m------------[m
+ src/screens/CustomerPartsCatalog.jsx |  258 [32m+++[m[31m--[m
+ src/screens/CustomerProfile.jsx      |   15 [32m+[m
+ src/screens/CustomerServices.jsx     |  264 [32m+++++[m[31m-[m
+ 9 files changed, 3384 insertions(+), 1774 deletions(-)

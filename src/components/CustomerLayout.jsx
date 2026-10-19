@@ -1,7 +1,9 @@
 import { usePathname, useRouter } from "expo-router";
-import { signOut } from "firebase/auth";
+import { onAuthStateChanged, signOut } from "firebase/auth";
 import {
   collection,
+  doc,
+  getDocs,
   onSnapshot,
   query,
   updateDoc,
@@ -10,6 +12,7 @@ import {
 import { useEffect, useState } from "react";
 import {
   Image,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -24,10 +27,23 @@ export default function CustomerLayout({ title, children }) {
   const pathname = usePathname();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [showNotifications, setShowNotifications] =
-    useState(false);
-
+  const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState([]);
+  const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
+  const [activePopup, setActivePopup] = useState(null);
+
+  // Automatically dismiss the in-app notification after five seconds.
+  useEffect(() => {
+    if (!activePopup) return undefined;
+
+    const timeoutId = setTimeout(() => {
+      setActivePopup((currentPopup) =>
+        currentPopup?.id === activePopup.id ? null : currentPopup
+      );
+    }, 5000);
+
+    return () => clearTimeout(timeoutId);
+  }, [activePopup]);
 
   /*
    * ==========================================
@@ -36,71 +52,202 @@ export default function CustomerLayout({ title, children }) {
    */
 
   useEffect(() => {
-    const currentUser = auth.currentUser;
+    let unsubscribeNotifications = null;
 
-    if (!currentUser) {
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      // Stop listening to the previous user's notifications.
+      if (unsubscribeNotifications) {
+        unsubscribeNotifications();
+        unsubscribeNotifications = null;
+      }
+
       setNotifications([]);
-      return;
-    }
+      setActivePopup(null);
 
-    const notificationsRef = collection(
-      db,
-      "notifications"
-    );
+      if (!currentUser) {
+        return;
+      }
 
-    const notificationsQuery = query(
-      notificationsRef,
-      where("customerId", "==", currentUser.uid)
-    );
+      let initialSnapshotReceived = false;
 
-    const unsubscribe = onSnapshot(
-      notificationsQuery,
-      (snapshot) => {
-        const notificationList = snapshot.docs.map(
-          (notificationDoc) => {
-            const data = notificationDoc.data();
+      const notificationsRef = collection(db, "notifications");
 
-            return {
-              id: notificationDoc.id,
-              type: data.type || "service",
-              title: data.title || "Notification",
-              message: data.message || "",
-              route: data.route || "/dashboard",
-              unread: data.read !== true,
-              createdAt: data.createdAt || null,
-            };
+      const notificationsQuery = query(
+        notificationsRef,
+        where("customerId", "==", currentUser.uid),
+        where("recipientRole", "==", "customer")
+      );
+
+      unsubscribeNotifications = onSnapshot(
+        notificationsQuery,
+        (snapshot) => {
+          // Do not pop up historical notifications on the first snapshot.
+          if (initialSnapshotReceived) {
+            snapshot.docChanges().forEach((change) => {
+              if (change.type !== "added") return;
+              const data = change.doc.data();
+              setActivePopup({
+                id: change.doc.id,
+                type: data.type || "service",
+                title: data.title || "MPRSS Notification",
+                message: data.message || "You have a new notification.",
+                route: data.route || "/dashboard",
+                unread: data.read !== true,
+                createdAt: data.createdAt || null,
+              });
+            });
+          } else {
+            initialSnapshotReceived = true;
           }
-        );
 
-        /*
-         * Sort newest first.
-         * We do this locally so you don't immediately
-         * need a Firestore composite index.
-         */
-        notificationList.sort((a, b) => {
-          const aTime = a.createdAt?.toMillis
-            ? a.createdAt.toMillis()
-            : 0;
+          const notificationList = snapshot.docs.map(
+            (notificationDoc) => {
+              const data = notificationDoc.data();
 
-          const bTime = b.createdAt?.toMillis
-            ? b.createdAt.toMillis()
-            : 0;
+              return {
+                id: notificationDoc.id,
+                type: data.type || "service",
+                title: data.title || "Notification",
+                message: data.message || "",
+                route: data.route || "/dashboard",
+                unread: data.read !== true,
+                createdAt: data.createdAt || null,
+              };
+            }
+          );
 
-          return bTime - aTime;
+          // Sort newest first without requiring a composite index.
+          notificationList.sort((a, b) => {
+            const aTime = a.createdAt?.toMillis
+              ? a.createdAt.toMillis()
+              : 0;
+
+            const bTime = b.createdAt?.toMillis
+              ? b.createdAt.toMillis()
+              : 0;
+
+            return bTime - aTime;
+          });
+
+          setNotifications(notificationList);
+        },
+        (error) => {
+          console.error("Notifications listener error:", error);
+        }
+      );
+    });
+
+    return () => {
+      unsubscribeAuth();
+
+      if (unsubscribeNotifications) {
+        unsubscribeNotifications();
+      }
+    };
+  }, []);
+
+  /*
+   * ==========================================
+   * REAL-TIME UNREAD MESSAGE BADGE
+   * Uses the existing conversations/{id}.unreadForCustomer field.
+   * ==========================================
+   */
+
+  useEffect(() => {
+    let unsubscribeConversations = null;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      if (unsubscribeConversations) {
+        unsubscribeConversations();
+        unsubscribeConversations = null;
+      }
+
+      setUnreadMessagesCount(0);
+
+      if (!currentUser) return;
+
+      unsubscribeConversations = onSnapshot(
+        collection(db, "conversations"),
+        (snapshot) => {
+          const unreadTotal = snapshot.docs.reduce((total, conversationDoc) => {
+            const conversation = conversationDoc.data();
+            const belongsToCurrentCustomer =
+              conversation.customerId === currentUser.uid ||
+              conversation.customerUid === currentUser.uid;
+
+            if (!belongsToCurrentCustomer) return total;
+
+            return total + Math.max(
+              0,
+              Number(conversation.unreadForCustomer || 0)
+            );
+          }, 0);
+
+          setUnreadMessagesCount(unreadTotal);
+        },
+        (error) => {
+          console.error("Unread messages listener error:", error);
+          setUnreadMessagesCount(0);
+        }
+      );
+    });
+
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeConversations) unsubscribeConversations();
+    };
+  }, []);
+
+  /*
+   * ==========================================
+   * MARK CUSTOMER MESSAGES AS READ
+   * When the Messages screen is opened, clear the
+   * unread counter in each of this customer's conversations.
+   * ==========================================
+   */
+  useEffect(() => {
+    if (!pathname?.startsWith("/messages")) return;
+
+    let cancelled = false;
+    let unsubscribeAuth = null;
+
+    // Hide the badge immediately while Firestore is updated.
+    setUnreadMessagesCount(0);
+
+    unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+      if (!currentUser || cancelled) return;
+
+      try {
+        const snapshot = await getDocs(collection(db, "conversations"));
+        if (cancelled) return;
+
+        const unreadConversations = snapshot.docs.filter((conversationDoc) => {
+          const conversation = conversationDoc.data();
+          const belongsToCurrentCustomer =
+            conversation.customerId === currentUser.uid ||
+            conversation.customerUid === currentUser.uid;
+
+          return (
+            belongsToCurrentCustomer &&
+            Number(conversation.unreadForCustomer || 0) > 0
+          );
         });
 
-        setNotifications(notificationList);
-      },
-      (error) => {
-        console.error(
-          "Notifications listener error:",
-          error
+        await Promise.all(
+          unreadConversations.map((conversationDoc) =>
+            updateDoc(conversationDoc.ref, { unreadForCustomer: 0 })
+          )
         );
+      } catch (error) {
+        console.error("Error marking customer messages as read:", error);
       }
-    );
+    });
 
-    return () => unsubscribe();
-  }, []);
+    return () => {
+      cancelled = true;
+      if (unsubscribeAuth) unsubscribeAuth();
+    };
+  }, [pathname]);
 
   /*
    * ==========================================
@@ -116,8 +263,7 @@ export default function CustomerLayout({ title, children }) {
     const notificationDate = timestamp.toDate();
     const now = new Date();
 
-    const difference =
-      now.getTime() - notificationDate.getTime();
+    const difference = now.getTime() - notificationDate.getTime();
 
     const seconds = Math.floor(difference / 1000);
     const minutes = Math.floor(seconds / 60);
@@ -129,15 +275,11 @@ export default function CustomerLayout({ title, children }) {
     }
 
     if (minutes < 60) {
-      return `${minutes} ${
-        minutes === 1 ? "minute" : "minutes"
-      } ago`;
+      return `${minutes} ${minutes === 1 ? "minute" : "minutes"} ago`;
     }
 
     if (hours < 24) {
-      return `${hours} ${
-        hours === 1 ? "hour" : "hours"
-      } ago`;
+      return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
     }
 
     if (days < 7) {
@@ -169,14 +311,8 @@ export default function CustomerLayout({ title, children }) {
     { route: "/services", label: "My Services" },
     { route: "/ai-assistant", label: "AI Assistant" },
     { route: "/builds", label: "My Builds" },
-    {
-      route: "/community-builds",
-      label: "Community Builds",
-    },
-    {
-      route: "/parts-catalog",
-      label: "Parts Catalog",
-    },
+    { route: "/community-builds", label: "Community Builds" },
+    { route: "/parts-catalog", label: "Parts Catalog" },
     { route: "/messages", label: "Messages" },
     { route: "/profile", label: "Profile" },
   ];
@@ -184,43 +320,13 @@ export default function CustomerLayout({ title, children }) {
   const handleNavigate = (route) => {
     setSidebarOpen(false);
     setShowNotifications(false);
-    router.push(route);
-  };
 
-  /*
-   * ==========================================
-   * NOTIFICATION PRESS
-   * ==========================================
-   */
-
-  const handleNotificationPress = async (
-    notification
-  ) => {
-    setShowNotifications(false);
-
-    try {
-      if (notification.unread) {
-        await updateDoc(
-          collection(db, "notifications")
-            ? // This part is replaced below by direct document access.
-              // Kept out of the actual operation.
-              null
-            : null,
-          {}
-        );
-      }
-    } catch (error) {
-      console.error(
-        "Notification read error:",
-        error
-      );
+    if (route === "/messages") {
+      // Immediate UI feedback; the effect above persists this in Firestore.
+      setUnreadMessagesCount(0);
     }
 
-    /*
-     * Navigate even if marking the notification
-     * as read fails.
-     */
-    router.push(notification.route);
+    router.push(route);
   };
 
   /*
@@ -229,44 +335,31 @@ export default function CustomerLayout({ title, children }) {
    * ==========================================
    */
 
-  const markNotificationAsRead = async (
-    notification
-  ) => {
+  const markNotificationAsRead = async (notification) => {
     if (!notification.unread) {
       return;
     }
 
     try {
-      const { doc } = await import("firebase/firestore");
-
-      const notificationRef = doc(
-        db,
-        "notifications",
-        notification.id
-      );
-
-      await updateDoc(notificationRef, {
+      await updateDoc(doc(db, "notifications", notification.id), {
         read: true,
       });
     } catch (error) {
-      console.error(
-        "Mark notification as read error:",
-        error
-      );
+      console.error("Mark notification as read error:", error);
     }
   };
 
   /*
    * ==========================================
-   * ACTUAL NOTIFICATION PRESS
+   * NOTIFICATION PRESS
    * ==========================================
    */
 
-  const handleNotificationItemPress = async (
-    notification
-  ) => {
+  const handleNotificationItemPress = async (notification) => {
     setShowNotifications(false);
+    setActivePopup(null);
 
+    // Navigate even if updating the read status fails.
     await markNotificationAsRead(notification);
 
     if (notification.route) {
@@ -281,33 +374,24 @@ export default function CustomerLayout({ title, children }) {
    */
 
   const handleMarkAllAsRead = async () => {
+    const unreadNotifications = notifications.filter(
+      (notification) => notification.unread
+    );
+
+    if (unreadNotifications.length === 0) {
+      return;
+    }
+
     try {
-      const unreadNotifications =
-        notifications.filter(
-          (notification) => notification.unread
-        );
-
-      const { doc } = await import("firebase/firestore");
-
       await Promise.all(
         unreadNotifications.map((notification) =>
-          updateDoc(
-            doc(
-              db,
-              "notifications",
-              notification.id
-            ),
-            {
-              read: true,
-            }
-          )
+          updateDoc(doc(db, "notifications", notification.id), {
+            read: true,
+          })
         )
       );
     } catch (error) {
-      console.error(
-        "Mark all notifications as read error:",
-        error
-      );
+      console.error("Mark all notifications as read error:", error);
     }
   };
 
@@ -356,191 +440,147 @@ export default function CustomerLayout({ title, children }) {
             <TouchableOpacity
               style={styles.notificationButton}
               onPress={() =>
-                setShowNotifications(
-                  (previous) => !previous
-                )
+                setShowNotifications((previous) => !previous)
               }
               activeOpacity={0.7}
             >
-              <Text style={styles.notificationIcon}>
-                🔔
-              </Text>
+              <Text style={styles.notificationIcon}>🔔</Text>
 
               {unreadCount > 0 && (
                 <View style={styles.notificationBadge}>
-                  <Text
-                    style={styles.notificationBadgeText}
-                  >
-                    {unreadCount > 99
-                      ? "99+"
-                      : unreadCount}
+                  <Text style={styles.notificationBadgeText}>
+                    {unreadCount > 99 ? "99+" : unreadCount}
                   </Text>
                 </View>
               )}
             </TouchableOpacity>
 
-            {showNotifications && (
-              <View style={styles.notificationDropdown}>
+            <Modal
+              visible={showNotifications}
+              transparent
+              animationType="fade"
+              statusBarTranslucent
+              onRequestClose={() => setShowNotifications(false)}
+            >
+              <View style={styles.notificationModalOverlay}>
+                <Pressable
+                  style={StyleSheet.absoluteFill}
+                  onPress={() => setShowNotifications(false)}
+                />
+                <View
+                  style={[
+                    styles.notificationDropdown,
+                    styles.notificationModalDropdown,
+                  ]}
+                >
                 {/* HEADER */}
                 <View style={styles.notificationHeader}>
                   <View>
-                    <Text
-                      style={styles.notificationTitle}
-                    >
+                    <Text style={styles.notificationTitle}>
                       Notifications
                     </Text>
 
-                    <Text
-                      style={styles.notificationSubtitle}
-                    >
+                    <Text style={styles.notificationSubtitle}>
                       {unreadCount} unread
                     </Text>
                   </View>
 
                   <TouchableOpacity
-                    onPress={() =>
-                      setShowNotifications(false)
-                    }
+                    onPress={() => setShowNotifications(false)}
                   >
-                    <Text
-                      style={styles.notificationClose}
-                    >
-                      ×
-                    </Text>
+                    <Text style={styles.notificationClose}>×</Text>
                   </TouchableOpacity>
                 </View>
 
                 {/* NOTIFICATION LIST */}
                 <ScrollView
                   style={styles.notificationList}
-                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.notificationListContent}
+                  showsVerticalScrollIndicator={true}
+                  nestedScrollEnabled={true}
+                  keyboardShouldPersistTaps="handled"
                 >
                   {notifications.length === 0 ? (
                     <View style={styles.emptyNotifications}>
-                      <Text
-                        style={
-                          styles.emptyNotificationIcon
-                        }
-                      >
+                      <Text style={styles.emptyNotificationIcon}>
                         🔔
                       </Text>
 
-                      <Text
-                        style={
-                          styles.emptyNotificationTitle
-                        }
-                      >
+                      <Text style={styles.emptyNotificationTitle}>
                         No notifications
                       </Text>
 
-                      <Text
-                        style={
-                          styles.emptyNotificationMessage
-                        }
-                      >
+                      <Text style={styles.emptyNotificationMessage}>
                         You're all caught up.
                       </Text>
                     </View>
                   ) : (
-                    notifications.map(
-                      (notification) => (
-                        <TouchableOpacity
-                          key={notification.id}
+                    notifications.map((notification) => (
+                      <TouchableOpacity
+                        key={notification.id}
+                        style={[
+                          styles.notificationItem,
+                          notification.unread &&
+                            styles.notificationItemUnread,
+                        ]}
+                        onPress={() =>
+                          handleNotificationItemPress(notification)
+                        }
+                        activeOpacity={0.8}
+                      >
+                        {/* TYPE ICON */}
+                        <View
                           style={[
-                            styles.notificationItem,
-                            notification.unread &&
-                              styles.notificationItemUnread,
+                            styles.notificationTypeIcon,
+                            notification.type === "service" &&
+                              styles.serviceIcon,
+                            notification.type === "message" &&
+                              styles.messageIcon,
+                            notification.type === "ai" &&
+                              styles.aiIcon,
                           ]}
-                          onPress={() =>
-                            handleNotificationItemPress(
-                              notification
-                            )
-                          }
-                          activeOpacity={0.8}
                         >
-                          {/* TYPE ICON */}
-                          <View
-                            style={[
-                              styles.notificationTypeIcon,
-                              notification.type ===
-                                "service" &&
-                                styles.serviceIcon,
-                              notification.type ===
-                                "message" &&
-                                styles.messageIcon,
-                              notification.type ===
-                                "ai" &&
-                                styles.aiIcon,
-                            ]}
-                          >
+                          <Text style={styles.notificationTypeText}>
+                            {notification.type === "service"
+                              ? "✓"
+                              : notification.type === "message"
+                                ? "•"
+                                : "✦"}
+                          </Text>
+                        </View>
+
+                        {/* CONTENT */}
+                        <View style={styles.notificationContent}>
+                          <View style={styles.notificationTitleRow}>
                             <Text
-                              style={
-                                styles.notificationTypeText
-                              }
+                              style={[
+                                styles.notificationItemTitle,
+                                notification.unread &&
+                                  styles.notificationItemTitleUnread,
+                              ]}
+                              numberOfLines={1}
                             >
-                              {notification.type ===
-                              "service"
-                                ? "✓"
-                                : notification.type ===
-                                    "message"
-                                  ? "•"
-                                  : "✦"}
+                              {notification.title}
                             </Text>
+
+                            {notification.unread && (
+                              <View style={styles.unreadDot} />
+                            )}
                           </View>
 
-                          {/* CONTENT */}
-                          <View
-                            style={
-                              styles.notificationContent
-                            }
+                          <Text
+                            style={styles.notificationMessage}
+                            numberOfLines={2}
                           >
-                            <View
-                              style={
-                                styles.notificationTitleRow
-                              }
-                            >
-                              <Text
-                                style={[
-                                  styles.notificationItemTitle,
-                                  notification.unread &&
-                                    styles.notificationItemTitleUnread,
-                                ]}
-                                numberOfLines={1}
-                              >
-                                {notification.title}
-                              </Text>
+                            {notification.message}
+                          </Text>
 
-                              {notification.unread && (
-                                <View
-                                  style={
-                                    styles.unreadDot
-                                  }
-                                />
-                              )}
-                            </View>
-
-                            <Text
-                              style={
-                                styles.notificationMessage
-                              }
-                              numberOfLines={2}
-                            >
-                              {notification.message}
-                            </Text>
-
-                            <Text
-                              style={
-                                styles.notificationTime
-                              }
-                            >
-                              {formatNotificationTime(
-                                notification.createdAt
-                              )}
-                            </Text>
-                          </View>
-                        </TouchableOpacity>
-                      )
-                    )
+                          <Text style={styles.notificationTime}>
+                            {formatNotificationTime(notification.createdAt)}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))
                   )}
                 </ScrollView>
 
@@ -549,19 +589,141 @@ export default function CustomerLayout({ title, children }) {
                   <TouchableOpacity
                     style={styles.viewAllButton}
                     onPress={handleMarkAllAsRead}
+                    activeOpacity={0.7}
                   >
                     <Text style={styles.viewAllText}>
                       Mark all as read
                     </Text>
                   </TouchableOpacity>
                 )}
+                </View>
               </View>
-            )}
+            </Modal>
           </View>
         </View>
 
-        <View style={styles.page}>{children}</View>
+        <View style={styles.page}>
+          {children}
+        </View>
       </View>
+
+      {/* FIXED MOBILE BOTTOM NAVIGATION */}
+      <View style={styles.bottomNav}>
+        {[
+          { route: "/dashboard", label: "Home", icon: "⌂" },
+          { route: "/services", label: "Services", icon: "▣" },
+          { route: "/ai-assistant", label: "AI Assistant", icon: "✦", center: true },
+          { route: "/messages", label: "Messages", icon: "✉" },
+          { route: "/profile", label: "Profile", icon: "●" },
+        ].map((item) => {
+          const active =
+            pathname === item.route ||
+            (item.route === "/services" && pathname.startsWith("/services/")) ||
+            (item.route === "/messages" && pathname.startsWith("/messages/"));
+
+          return (
+            <TouchableOpacity
+              key={item.route}
+              style={[
+                styles.bottomNavItem,
+                item.center && styles.bottomNavCenterItem,
+                active && !item.center && styles.bottomNavItemActive,
+              ]}
+              onPress={() => handleNavigate(item.route)}
+              activeOpacity={0.75}
+              accessibilityRole="button"
+              accessibilityLabel={item.label}
+            >
+              {item.center ? (
+                <View style={[styles.bottomNavCenterIcon, active && styles.bottomNavCenterIconActive]}>
+                  <Text style={styles.bottomNavCenterIconText}>{item.icon}</Text>
+                </View>
+              ) : (
+                <View style={styles.bottomNavIconWrap}>
+                  <Text style={[styles.bottomNavIcon, active && styles.bottomNavIconActive]}>
+                    {item.icon}
+                  </Text>
+                  {item.route === "/messages" && unreadMessagesCount > 0 && (
+                    <View style={styles.messageUnreadBadge}>
+                      <Text style={styles.messageUnreadBadgeText}>
+                        {unreadMessagesCount > 99 ? "99+" : unreadMessagesCount}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
+              <Text
+                numberOfLines={1}
+                style={[
+                  styles.bottomNavLabel,
+                  (active || item.center) && styles.bottomNavLabelActive,
+                ]}
+              >
+                {item.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* IN-APP NOTIFICATION POPUP */}
+      {activePopup && (
+        <View style={styles.popupHost} pointerEvents="box-none">
+          <View style={styles.popupCard}>
+            <View style={styles.popupTopRow}>
+              <View style={styles.popupBrandRow}>
+                <View style={styles.popupIconCircle}>
+                  <Text style={styles.popupIconText}>
+                    {activePopup.type === "service"
+                      ? "✓"
+                      : activePopup.type === "message"
+                        ? "✉"
+                        : activePopup.type === "ai"
+                          ? "✦"
+                          : "🔔"}
+                  </Text>
+                </View>
+                <View style={styles.popupHeadingWrap}>
+                  <Text style={styles.popupEyebrow}>MPRSS • NOTIFICATION</Text>
+                  <Text style={styles.popupTitle} numberOfLines={1}>
+                    {activePopup.title}
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss notification"
+                style={styles.popupDismissButton}
+                onPress={() => setActivePopup(null)}
+              >
+                <Text style={styles.popupDismissText}>×</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.popupMessage} numberOfLines={3}>
+              {activePopup.message}
+            </Text>
+
+            <View style={styles.popupActions}>
+              <TouchableOpacity
+                style={styles.popupLaterButton}
+                onPress={() => setActivePopup(null)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.popupLaterText}>Later</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.popupViewButton}
+                onPress={() => handleNotificationItemPress(activePopup)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.popupViewText}>View notification</Text>
+                <Text style={styles.popupArrow}>›</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
 
       {/* OUTSIDE AREA — CLOSE SIDEBAR */}
       {sidebarOpen && (
@@ -590,27 +752,22 @@ export default function CustomerLayout({ title, children }) {
             showsVerticalScrollIndicator={false}
           >
             {menuItems.map((item) => {
-              const active =
-                pathname === item.route;
+              const active = pathname === item.route;
 
               return (
                 <TouchableOpacity
                   key={item.route}
                   style={[
                     styles.menuItem,
-                    active &&
-                      styles.menuItemActive,
+                    active && styles.menuItemActive,
                   ]}
-                  onPress={() =>
-                    handleNavigate(item.route)
-                  }
+                  onPress={() => handleNavigate(item.route)}
                   activeOpacity={0.7}
                 >
                   <Text
                     style={[
                       styles.menuText,
-                      active &&
-                        styles.menuTextActive,
+                      active && styles.menuTextActive,
                     ]}
                   >
                     {item.label}
@@ -627,9 +784,7 @@ export default function CustomerLayout({ title, children }) {
               onPress={handleLogout}
               activeOpacity={0.7}
             >
-              <Text style={styles.logoutText}>
-                Logout
-              </Text>
+              <Text style={styles.logoutText}>Logout</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -639,6 +794,121 @@ export default function CustomerLayout({ title, children }) {
 }
 
 const styles = StyleSheet.create({
+  popupHost: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    right: 12,
+    zIndex: 1000,
+    elevation: 1000,
+  },
+  popupCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    padding: 16,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 18,
+    elevation: 12,
+  },
+  popupTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+  },
+  popupBrandRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    marginRight: 10,
+  },
+  popupIconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
+  },
+  popupIconText: {
+    color: "#ffffff",
+    fontSize: 19,
+    fontWeight: "700",
+  },
+  popupHeadingWrap: { flex: 1 },
+  popupEyebrow: {
+    color: "#6b7280",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 1.1,
+    marginBottom: 3,
+  },
+  popupTitle: {
+    color: "#111827",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  popupDismissButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    backgroundColor: "#f3f4f6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  popupDismissText: {
+    color: "#4b5563",
+    fontSize: 23,
+    lineHeight: 25,
+  },
+  popupMessage: {
+    color: "#4b5563",
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 13,
+    marginBottom: 15,
+  },
+  popupActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 9,
+  },
+  popupLaterButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 9,
+    backgroundColor: "#f3f4f6",
+  },
+  popupLaterText: {
+    color: "#374151",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  popupViewButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 9,
+    backgroundColor: "#111827",
+  },
+  popupViewText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  popupArrow: {
+    color: "#ffffff",
+    fontSize: 18,
+    lineHeight: 18,
+    marginLeft: 7,
+  },
   container: {
     flex: 1,
     backgroundColor: "#f9fafb",
@@ -689,7 +959,6 @@ const styles = StyleSheet.create({
   },
 
   /* NOTIFICATION BUTTON */
-
   notificationWrapper: {
     position: "relative",
     zIndex: 50,
@@ -729,8 +998,23 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
 
-  /* NOTIFICATION DROPDOWN */
+  /* NOTIFICATION MODAL: keep the dropdown above page content so scroll gestures reach the list. */
+  notificationModalOverlay: {
+    flex: 1,
+    alignItems: "flex-end",
+    paddingTop: 68,
+    paddingHorizontal: 12,
+  },
 
+  notificationModalDropdown: {
+    position: "relative",
+    top: 0,
+    right: 0,
+    maxWidth: "100%",
+    maxHeight: "80%",
+  },
+
+  /* NOTIFICATION DROPDOWN */
   notificationDropdown: {
     position: "absolute",
     top: 45,
@@ -781,7 +1065,13 @@ const styles = StyleSheet.create({
   },
 
   notificationList: {
-    maxHeight: 300,
+    height: 300,
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+
+  notificationListContent: {
+    flexGrow: 0,
   },
 
   notificationItem: {
@@ -906,8 +1196,119 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  /* SIDEBAR OVERLAY */
+  /* FIXED MOBILE BOTTOM NAVIGATION */
+  bottomNav: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-around",
+    backgroundColor: "#ffffff",
+    borderTopWidth: 1,
+    borderTopColor: "#e5e7eb",
+    paddingHorizontal: 4,
+    paddingTop: 6,
+    paddingBottom: 8,
+    elevation: 12,
+    zIndex: 5,
+  },
 
+  bottomNavItem: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 2,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+
+  bottomNavItemActive: {
+    backgroundColor: "#f3f4f6",
+  },
+
+  bottomNavCenterItem: {
+    marginTop: -18,
+  },
+
+  bottomNavCenterIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 4,
+    borderColor: "#ffffff",
+    elevation: 7,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+  },
+
+  bottomNavCenterIconActive: {
+    backgroundColor: "#2563eb",
+  },
+
+  bottomNavCenterIconText: {
+    color: "#ffffff",
+    fontSize: 23,
+    lineHeight: 27,
+    fontWeight: "800",
+  },
+
+  bottomNavIconWrap: {
+    minHeight: 24,
+    minWidth: 26,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  bottomNavIcon: {
+    color: "#6b7280",
+    fontSize: 20,
+    lineHeight: 23,
+    fontWeight: "700",
+  },
+
+  bottomNavIconActive: {
+    color: "#111827",
+  },
+
+  messageUnreadBadge: {
+    position: "absolute",
+    top: -5,
+    right: -10,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: "#ef4444",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#ffffff",
+  },
+
+  messageUnreadBadgeText: {
+    color: "#ffffff",
+    fontSize: 9,
+    fontWeight: "800",
+  },
+
+  bottomNavLabel: {
+    color: "#6b7280",
+    fontSize: 9,
+    marginTop: 3,
+    fontWeight: "600",
+  },
+
+  bottomNavLabelActive: {
+    color: "#111827",
+    fontWeight: "800",
+  },
+
+  /* SIDEBAR OVERLAY */
   overlay: {
     position: "absolute",
     top: 0,
@@ -920,7 +1321,6 @@ const styles = StyleSheet.create({
   },
 
   /* SIDEBAR */
-
   sidebar: {
     position: "absolute",
     left: 0,

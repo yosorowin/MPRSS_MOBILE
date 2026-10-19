@@ -1,5 +1,19 @@
+import { onAuthStateChanged } from "firebase/auth";
+import {
+  addDoc,
+  collection,
+  doc,
+  getDocs,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+} from "firebase/firestore";
 import { useEffect, useState } from "react";
 import {
+  Alert,
   Modal,
   ScrollView,
   StyleSheet,
@@ -8,226 +22,724 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-
 import CustomerLayout from "../components/CustomerLayout";
-
-import { onAuthStateChanged } from "firebase/auth";
-import {
-  addDoc,
-  collection,
-  doc,
-  onSnapshot,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where,
-} from "firebase/firestore";
-
 import { auth, db } from "../firebase";
+
+const BRAND_OPTIONS = [
+  "Honda",
+  "Yamaha",
+  "Suzuki",
+  "Kawasaki",
+  "KTM",
+  "Kymco",
+  "TVS",
+  "SYM",
+  "Euro Motor",
+  "Keeway",
+  "CFMOTO",
+  "Benelli",
+  "Royal Enfield",
+  "Vespa",
+  "BMW",
+  "Ducati",
+  "Triumph",
+  "Harley-Davidson",
+  "Other",
+];
+
+const MODEL_OPTIONS = {
+  Honda: [
+    "Click 125i",
+    "Click 160",
+    "ADV 160",
+    "PCX 160",
+    "Beat",
+    "Beat Premium",
+    "Airblade 160",
+    "XRM 125",
+    "TMX 125 Alpha",
+    "CB150R",
+    "CBR150R",
+    "Other",
+  ],
+
+  Yamaha: [
+    "Mio i125",
+    "Mio Gear",
+    "Mio Gravis",
+    "NMAX",
+    "Aerox",
+    "Fazzio",
+    "Sniper 155",
+    "MT-15",
+    "YZF-R15",
+    "Other",
+  ],
+
+  Suzuki: [
+    "Raider R150",
+    "Burgman Street",
+    "Avenis 125",
+    "Skydrive Sport",
+    "Smash",
+    "Gixxer",
+    "GSX-R150",
+    "Other",
+  ],
+
+  Kawasaki: [
+    "Barako II",
+    "Rouser NS160",
+    "Rouser NS200",
+    "Ninja 400",
+    "Ninja 650",
+    "Z400",
+    "Z650",
+    "Other",
+  ],
+
+  KTM: [
+    "Duke 200",
+    "Duke 390",
+    "RC 200",
+    "RC 390",
+    "390 Adventure",
+    "Other",
+  ],
+
+  Kymco: [
+    "Like 125",
+    "KRV 180i",
+    "AK 550",
+    "X-Town 300i",
+    "Other",
+  ],
+
+  TVS: [
+    "NTORQ 125",
+    "Apache RTR 160",
+    "Apache RTR 200",
+    "XL100",
+    "King Deluxe",
+    "Other",
+  ],
+
+  SYM: [
+    "Jet 4 RX",
+    "Tuscany 150",
+    "Naga 155",
+    "Cruisym GT 150",
+    "Husky 150",
+    "Cruisym 400",
+    "ADX TG 400",
+    "Maxsym TL 508",
+    "VF3i 185 V3",
+    "Other",
+  ],
+
+  "Euro Motor": [
+    "EZ 125 EFI",
+    "Samurai 155i",
+    "Griffin 180i",
+    "Falcon 180i",
+    "Peak 110",
+    "Sport E 110 V2",
+    "Rock R 125 V3",
+    "Marvel 125",
+    "Vperman 150i",
+    "Other",
+  ],
+
+  Keeway: [
+    "Icon 110",
+    "Icon 125i",
+    "Other",
+  ],
+
+  CFMOTO: [
+    "300SR",
+    "300NK",
+    "450SR",
+    "450NK",
+    "650MT",
+    "650NK",
+    "Other",
+  ],
+
+  Benelli: [
+    "RFS 150i",
+    "Leoncino 250",
+    "302S",
+    "TNT 600i",
+    "Other",
+  ],
+
+  "Royal Enfield": [
+    "Classic 350",
+    "Meteor 350",
+    "Hunter 350",
+    "Interceptor 650",
+    "Continental GT 650",
+    "Other",
+  ],
+
+  Vespa: [
+    "S 125",
+    "Primavera 150",
+    "Sprint 150",
+    "GTS 300",
+    "Other",
+  ],
+
+  BMW: [
+    "G 310 R",
+    "G 310 GS",
+    "C 400 GT",
+    "F 900 R",
+    "Other",
+  ],
+
+  Ducati: [
+    "Monster",
+    "Panigale V2",
+    "Panigale V4",
+    "Scrambler",
+    "Other",
+  ],
+
+  Triumph: [
+    "Speed 400",
+    "Scrambler 400 X",
+    "Street Triple",
+    "Bonneville T100",
+    "Other",
+  ],
+
+  "Harley-Davidson": [
+    "Iron 883",
+    "Sportster S",
+    "Nightster",
+    "Street Bob",
+    "Other",
+  ],
+
+  Other: [
+    "Other",
+  ],
+};
+
+const COLOR_OPTIONS = [
+  "Black",
+  "White",
+  "Red",
+  "Blue",
+  "Gray",
+  "Silver",
+  "Green",
+  "Yellow",
+  "Orange",
+  "Brown",
+  "Gold",
+  "Purple",
+  "Other",
+];
+
+const CURRENT_YEAR = new Date().getFullYear();
+
+const YEAR_OPTIONS = Array.from(
+  { length: CURRENT_YEAR - 1990 + 1 },
+  (_, index) => String(CURRENT_YEAR - index)
+);
+
+function DropdownField({
+  label,
+  value,
+  placeholder,
+  options,
+  onChange,
+}) {
+  const [visible, setVisible] = useState(false);
+
+  return (
+    <>
+      <Text style={styles.label}>
+        {label} <Text style={styles.required}>*</Text>
+      </Text>
+
+      <TouchableOpacity
+        style={styles.dropdown}
+        onPress={() => setVisible(true)}
+        activeOpacity={0.8}
+      >
+        <Text
+          style={[
+            styles.dropdownText,
+            !value && styles.dropdownPlaceholder,
+          ]}
+        >
+          {value || placeholder}
+        </Text>
+
+        <Text style={styles.dropdownArrow}>▼</Text>
+      </TouchableOpacity>
+
+      <Modal
+        visible={visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.dropdownOverlay}
+          activeOpacity={1}
+          onPress={() => setVisible(false)}
+        >
+          <TouchableOpacity
+            style={styles.dropdownMenu}
+            activeOpacity={1}
+            onPress={() => {}}
+          >
+            <Text style={styles.dropdownTitle}>{label}</Text>
+
+            <ScrollView
+              style={styles.dropdownScroll}
+              showsVerticalScrollIndicator={false}
+            >
+              {options.map((option) => (
+                <TouchableOpacity
+                  key={option}
+                  style={[
+                    styles.dropdownOption,
+                    value === option &&
+                      styles.dropdownOptionSelected,
+                  ]}
+                  onPress={() => {
+                    onChange(option);
+                    setVisible(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.dropdownOptionText,
+                      value === option &&
+                        styles.dropdownOptionTextSelected,
+                    ]}
+                  >
+                    {option}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+    </>
+  );
+}
 
 export default function CustomerMotorcycles() {
   const [currentUser, setCurrentUser] = useState(null);
   const [motorcycles, setMotorcycles] = useState([]);
 
-  const [showForm, setShowForm] = useState(false);
-  const [showDeleteModal, setShowDeleteModal] =
+  const [showModal, setShowModal] = useState(false);
+  const [editingMotorcycle, setEditingMotorcycle] = useState(null);
+
+  const [showDeleteRequestModal, setShowDeleteRequestModal] =
     useState(false);
 
-  const [editingMoto, setEditingMoto] = useState(null);
-  const [deletingMoto, setDeletingMoto] = useState(null);
+  const [deletionMotorcycle, setDeletionMotorcycle] =
+    useState(null);
 
-  const [deleteReason, setDeleteReason] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [deletionReason, setDeletionReason] = useState("");
 
   const [motorcycleData, setMotorcycleData] = useState({
     brand: "",
     model: "",
     year: "",
     plate: "",
-    vin: "",
     color: "",
   });
 
-  /*
-   * FIREBASE AUTH LISTENER
-   */
+  const [catalogBrands, setCatalogBrands] = useState([]);
+  const [catalogModels, setCatalogModels] = useState({});
+
+  const [loading, setLoading] = useState(false);
+  const [deletionLoading, setDeletionLoading] = useState(false);
+
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      (user) => {
-        setCurrentUser(user || null);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+    });
+
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    const catalogRef = collection(db, "motorcycleCatalog");
+
+    const initializeCatalog = async () => {
+      try {
+        const snapshot = await getDocs(catalogRef);
+
+        const existingBrands = new Set(
+          snapshot.docs.map((item) => item.data()?.brand)
+        );
+
+        for (const brand of BRAND_OPTIONS) {
+          if (!existingBrands.has(brand)) {
+            await setDoc(doc(catalogRef, brand), {
+              brand,
+              models: MODEL_OPTIONS[brand] || ["Other"],
+              status: "active",
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+      } catch (error) {
+        console.error(
+          "Motorcycle catalog initialization error:",
+          error
+        );
+      }
+    };
+
+    initializeCatalog();
+
+    const unsubscribe = onSnapshot(
+      catalogRef,
+      (snapshot) => {
+        const brands = [];
+        const models = {};
+
+        snapshot.docs.forEach((item) => {
+          const data = item.data();
+
+          if (!data?.brand) return;
+
+          if (data.status === "inactive") return;
+
+          brands.push(data.brand);
+
+          models[data.brand] = Array.isArray(data.models)
+            ? data.models
+            : ["Other"];
+        });
+
+        brands.sort(
+          (a, b) =>
+            BRAND_OPTIONS.indexOf(a) - BRAND_OPTIONS.indexOf(b)
+        );
+
+        setCatalogBrands(brands);
+        setCatalogModels(models);
+      },
+      (error) => {
+        console.error(
+          "Motorcycle catalog listener error:",
+          error
+        );
       }
     );
 
     return unsubscribe;
   }, []);
 
-  /*
-   * FIREBASE MOTORCYCLE LISTENER
-   */
   useEffect(() => {
     if (!currentUser?.uid) {
       setMotorcycles([]);
-      return undefined;
+      return;
     }
 
-    const motorcyclesQuery = query(
+    const q = query(
       collection(db, "motorcycles"),
       where("customerId", "==", currentUser.uid)
     );
 
     const unsubscribe = onSnapshot(
-      motorcyclesQuery,
+      q,
       (snapshot) => {
-        const firebaseMotorcycles =
-          snapshot.docs.map((item) => ({
-            id: item.id,
-            ...item.data(),
-          }));
+        const motorcycleList = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
 
-        setMotorcycles(firebaseMotorcycles);
+        setMotorcycles(motorcycleList);
       },
       (error) => {
-        console.error(
-          "Error loading motorcycles:",
-          error
-        );
-
-        setMotorcycles([]);
+        console.error("Motorcycles listener error:", error);
       }
     );
 
     return unsubscribe;
-  }, [currentUser?.uid]);
+  }, [currentUser]);
 
-  const resetForm = () => {
+  const openAddModal = () => {
+    setEditingMotorcycle(null);
+
     setMotorcycleData({
       brand: "",
       model: "",
       year: "",
       plate: "",
-      vin: "",
       color: "",
     });
 
-    setEditingMoto(null);
-    setShowForm(false);
+    setShowModal(true);
   };
 
-  const handleEdit = (moto) => {
-    setEditingMoto(moto);
+  const openEditModal = (motorcycle) => {
+    setEditingMotorcycle(motorcycle);
 
     setMotorcycleData({
-      brand: moto.brand || "",
-      model: moto.model || "",
-      year: moto.year ? String(moto.year) : "",
-      plate: moto.plate || "",
-      vin: moto.vin || "",
-      color: moto.color || "",
+      brand: motorcycle.brand || "",
+      model: motorcycle.model || "",
+      year: motorcycle.year ? String(motorcycle.year) : "",
+      plate: motorcycle.plate || "",
+      color: motorcycle.color || "",
     });
 
-    setShowForm(true);
+    setShowModal(true);
+  };
+
+  const closeModal = () => {
+    if (loading) return;
+
+    setShowModal(false);
+    setEditingMotorcycle(null);
+
+    setMotorcycleData({
+      brand: "",
+      model: "",
+      year: "",
+      plate: "",
+      color: "",
+    });
+  };
+
+  const openDeleteRequestModal = (motorcycle) => {
+    setDeletionMotorcycle(motorcycle);
+    setDeletionReason("");
+    setShowDeleteRequestModal(true);
+  };
+
+  const closeDeleteRequestModal = () => {
+    if (deletionLoading) return;
+
+    setShowDeleteRequestModal(false);
+    setDeletionMotorcycle(null);
+    setDeletionReason("");
+  };
+
+  const handleBrandChange = (brand) => {
+    setMotorcycleData((prev) => ({
+      ...prev,
+      brand,
+      model: "",
+    }));
   };
 
   const handleSave = async () => {
-    if (
-      !currentUser?.uid ||
-      !motorcycleData.brand.trim() ||
-      !motorcycleData.model.trim() ||
-      !motorcycleData.year.trim() ||
-      !motorcycleData.plate.trim()
-    ) {
+    if (!currentUser?.uid) return;
+
+    const brand = motorcycleData.brand.trim();
+    const model = motorcycleData.model.trim();
+    const year = motorcycleData.year.trim();
+    const plate = motorcycleData.plate.trim();
+    const color = motorcycleData.color.trim();
+
+    if (!brand || !model || !year || !plate || !color) {
       return;
     }
 
-    try {
-      setSaving(true);
+    setLoading(true);
 
+    try {
       const data = {
-        brand: motorcycleData.brand.trim(),
-        model: motorcycleData.model.trim(),
-        year: Number(motorcycleData.year),
-        plate: motorcycleData.plate.trim(),
-        vin: motorcycleData.vin.trim(),
-        color: motorcycleData.color.trim(),
+        brand,
+        model,
+        year: Number(year),
+        plate,
+        color,
         customerId: currentUser.uid,
         customerUid: currentUser.uid,
         customerEmail: currentUser.email || "",
         updatedAt: serverTimestamp(),
       };
 
-      if (editingMoto) {
-        const motorcycleRef = doc(
-          db,
-          "motorcycles",
-          editingMoto.id
+      if (editingMotorcycle?.id) {
+        await updateDoc(
+          doc(db, "motorcycles", editingMotorcycle.id),
+          data
         );
-
-        await updateDoc(motorcycleRef, data);
       } else {
         await addDoc(collection(db, "motorcycles"), {
           ...data,
-          deletionRequest: null,
           createdAt: serverTimestamp(),
         });
       }
 
-      resetForm();
+      closeModal();
     } catch (error) {
-      console.error(
-        "Error saving motorcycle:",
-        error
-      );
+      console.error("Save motorcycle error:", error);
     } finally {
-      setSaving(false);
+      setLoading(false);
     }
   };
 
-  const handleDeleteClick = (moto) => {
-    setDeletingMoto(moto);
-    setDeleteReason("");
-    setShowDeleteModal(true);
-  };
-
-  const handleConfirmDelete = async () => {
-    if (
-      !deleteReason.trim() ||
-      !deletingMoto ||
-      !currentUser?.uid
-    ) {
+  const handleDeleteRequest = async () => {
+    if (!currentUser?.uid) {
+      Alert.alert(
+        "Error",
+        "You are not currently signed in."
+      );
       return;
     }
 
-    try {
-      setSaving(true);
+    if (!deletionMotorcycle?.id) {
+      Alert.alert(
+        "Error",
+        "The selected motorcycle could not be found."
+      );
+      return;
+    }
 
-      const motorcycleRef = doc(
-        db,
-        "motorcycles",
-        deletingMoto.id
+    const reason = deletionReason.trim();
+
+    if (!reason) {
+      Alert.alert(
+        "Reason Required",
+        "Please provide a reason for the deletion request."
+      );
+      return;
+    }
+
+    setDeletionLoading(true);
+
+    try {
+      const requestData = {
+        motorcycleId: deletionMotorcycle.id,
+
+        customerId: currentUser.uid,
+        customerUid: currentUser.uid,
+        customerEmail: currentUser.email || "",
+
+        motorcycleBrand:
+          deletionMotorcycle.brand || "",
+        motorcycleModel:
+          deletionMotorcycle.model || "",
+        motorcycleYear:
+          deletionMotorcycle.year || "",
+        motorcyclePlate:
+          deletionMotorcycle.plate || "",
+        motorcycleColor:
+          deletionMotorcycle.color || "",
+
+        reason,
+
+        status: "pending",
+
+        requestedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+      console.log(
+        "FIREBASE PROJECT:",
+        db.app.options.projectId
       );
 
-      await updateDoc(motorcycleRef, {
-        deletionRequest: {
-          status: "pending",
-          reason: deleteReason.trim(),
-          requestedAt: serverTimestamp(),
-          requestedBy: currentUser.uid,
-        },
-        updatedAt: serverTimestamp(),
-      });
+      console.log(
+        "CREATING DELETION REQUEST:",
+        requestData
+      );
 
-      setShowDeleteModal(false);
-      setDeletingMoto(null);
-      setDeleteReason("");
+      const requestCollection = collection(
+        db,
+        "motorcycleDeletionRequests"
+      );
+
+      const requestRef = doc(requestCollection);
+
+      console.log(
+        "DELETION REQUEST DOCUMENT ID:",
+        requestRef.id
+      );
+
+      await setDoc(requestRef, requestData);
+
+      console.log(
+        "DELETION REQUEST SUCCESSFULLY WRITTEN:",
+        requestRef.id
+      );
+
+      // Notify the admin after the deletion request is safely saved.
+      // A notification failure should not make the customer request fail.
+      try {
+        const motorcycleLabel = [
+          deletionMotorcycle.brand,
+          deletionMotorcycle.model,
+          deletionMotorcycle.year,
+        ]
+          .filter(Boolean)
+          .join(" ");
+
+        await addDoc(collection(db, "notifications"), {
+          recipientRole: "admin",
+          type: "motorcycle_deletion",
+          title: "Motorcycle Deletion Request",
+          message: `${currentUser.displayName || currentUser.email || "A customer"} requested deletion of ${motorcycleLabel || "a motorcycle"}. Reason: ${reason}`,
+          route: "/admin/motorcycle-deletions",
+          relatedId: requestRef.id,
+          requestId: requestRef.id,
+          motorcycleId: deletionMotorcycle.id,
+          customerId: currentUser.uid,
+          customerName: currentUser.displayName || "",
+          customerEmail: currentUser.email || "",
+          read: false,
+          createdAt: serverTimestamp(),
+        });
+      } catch (notificationError) {
+        console.error(
+          "MOTORCYCLE DELETION NOTIFICATION ERROR:",
+          notificationError
+        );
+      }
+
+      Alert.alert(
+        "Request Sent",
+        "The deletion request was successfully saved to Firebase."
+      );
+
+      closeDeleteRequestModal();
     } catch (error) {
       console.error(
-        "Error requesting motorcycle deletion:",
+        "DELETION REQUEST FIREBASE ERROR:",
         error
       );
+
+      Alert.alert(
+        "Request Failed",
+        `${error.code || "Unknown error"}\n\n${
+          error.message || "Unable to save the request."
+        }`
+      );
     } finally {
-      setSaving(false);
+      setDeletionLoading(false);
     }
+  };
+
+  const getModelOptions = () => {
+    const options =
+      catalogModels[motorcycleData.brand] || [];
+
+    if (
+      motorcycleData.model &&
+      !options.includes(motorcycleData.model)
+    ) {
+      return [motorcycleData.model, ...options];
+    }
+
+    return options;
   };
 
   return (
@@ -237,194 +749,148 @@ export default function CustomerMotorcycles() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Page Header */}
-        <View style={styles.pageHeader}>
-          <View>
-            <Text style={styles.pageTitle}>
-              Registered Motorcycles
-            </Text>
-
-            <Text style={styles.pageSubtitle}>
-              Manage your motorcycles and their details.
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={() => {
-              setEditingMoto(null);
-
-              setMotorcycleData({
-                brand: "",
-                model: "",
-                year: "",
-                plate: "",
-                vin: "",
-                color: "",
-              });
-
-              setShowForm(true);
-            }}
-            activeOpacity={0.9}
-          >
-            <Text style={styles.addButtonText}>
-              + Add Motorcycle
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Empty State */}
-        {motorcycles.length === 0 && (
-          <View style={styles.emptyCard}>
-            <View style={styles.emptyIcon}>
-              <Text style={styles.emptyIconText}>
-                🏍
-              </Text>
-            </View>
-
+        {motorcycles.length === 0 ? (
+          <View style={styles.emptyState}>
             <Text style={styles.emptyTitle}>
-              No motorcycles registered
+              No motorcycles yet
             </Text>
 
             <Text style={styles.emptyText}>
-              Add your motorcycle to start managing its
-              details, services, and maintenance records.
+              Add your motorcycle to start managing your services
+              and maintenance records.
             </Text>
 
             <TouchableOpacity
-              style={styles.emptyAddButton}
-              onPress={() => {
-                setEditingMoto(null);
-                setShowForm(true);
-              }}
+              style={styles.emptyButton}
+              onPress={openAddModal}
+              activeOpacity={0.8}
             >
-              <Text style={styles.emptyAddText}>
+              <Text style={styles.emptyButtonText}>
                 Add Motorcycle
               </Text>
             </TouchableOpacity>
           </View>
-        )}
+        ) : (
+          <View style={styles.list}>
+            <TouchableOpacity
+              style={styles.addButton}
+              onPress={openAddModal}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.addButtonText}>
+                + Add Motorcycle
+              </Text>
+            </TouchableOpacity>
 
-        {/* Motorcycle Cards */}
-        {motorcycles.map((moto) => (
-          <View
-            key={moto.id}
-            style={styles.motorcycleCard}
-          >
-            <View style={styles.cardTop}>
-              <View style={styles.bikeIcon}>
-                <Text style={styles.bikeIconText}>
-                  🏍
-                </Text>
+            {motorcycles.map((motorcycle) => (
+              <View key={motorcycle.id} style={styles.card}>
+                <View style={styles.cardHeader}>
+                  <View style={styles.cardTitleContainer}>
+                    <Text style={styles.cardTitle}>
+                      {motorcycle.brand} {motorcycle.model}
+                    </Text>
+
+                    <Text style={styles.cardYear}>
+                      {motorcycle.year}
+                    </Text>
+                  </View>
+
+                  <View style={styles.cardActions}>
+                    <TouchableOpacity
+                      style={styles.editButton}
+                      onPress={() => openEditModal(motorcycle)}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={styles.editText}>Edit</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.deleteButton}
+                      onPress={() =>
+                        openDeleteRequestModal(motorcycle)
+                      }
+                      activeOpacity={0.75}
+                    >
+                      <Text style={styles.deleteText}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <View style={styles.detailsRow}>
+                  <View style={styles.detailItem}>
+                    <Text style={styles.detailLabel}>
+                      Plate
+                    </Text>
+
+                    <Text style={styles.detailValue}>
+                      {motorcycle.plate || "—"}
+                    </Text>
+                  </View>
+
+                  <View style={styles.detailItem}>
+                    <Text style={styles.detailLabel}>
+                      Color
+                    </Text>
+
+                    <Text style={styles.detailValue}>
+                      {motorcycle.color || "—"}
+                    </Text>
+                  </View>
+                </View>
               </View>
-
-              <View style={styles.cardActions}>
-                <TouchableOpacity
-                  style={styles.editButton}
-                  onPress={() => handleEdit(moto)}
-                >
-                  <Text style={styles.editText}>
-                    Edit
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.deleteButton}
-                  onPress={() =>
-                    handleDeleteClick(moto)
-                  }
-                >
-                  <Text style={styles.deleteText}>
-                    Delete
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <Text style={styles.motorcycleName}>
-              {moto.brand} {moto.model}
-            </Text>
-
-            {moto.deletionRequest?.status ===
-              "pending" && (
-              <View style={styles.pendingDeletionBox}>
-                <Text style={styles.pendingDeletionText}>
-                  Deletion request pending admin approval.
-                </Text>
-              </View>
-            )}
-
-            <View style={styles.details}>
-              <DetailRow
-                label="Year"
-                value={String(moto.year)}
-              />
-
-              <DetailRow
-                label="Plate"
-                value={moto.plate}
-              />
-
-              <DetailRow
-                label="VIN"
-                value={moto.vin || "—"}
-              />
-
-              <DetailRow
-                label="Color"
-                value={moto.color || "—"}
-              />
-            </View>
+            ))}
           </View>
-        ))}
+        )}
       </ScrollView>
 
-      {/* Add / Edit Modal */}
+      {/* ADD / EDIT MOTORCYCLE MODAL */}
       <Modal
-        visible={showForm}
+        visible={showModal}
         transparent
-        animationType="fade"
-        onRequestClose={resetForm}
+        animationType="slide"
+        onRequestClose={closeModal}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {editingMotorcycle
+                  ? "Edit Motorcycle"
+                  : "Add Motorcycle"}
+              </Text>
+
+              <TouchableOpacity onPress={closeModal}>
+                <Text style={styles.closeButton}>×</Text>
+              </TouchableOpacity>
+            </View>
+
             <ScrollView
+              style={styles.formScroll}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>
-                  {editingMoto
-                    ? "Edit Motorcycle"
-                    : "Add Motorcycle"}
-                </Text>
-
-                <TouchableOpacity
-                  onPress={resetForm}
-                >
-                  <Text style={styles.closeButton}>
-                    ×
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              <FormField
-                label="Brand *"
+              <DropdownField
+                label="Brand"
                 value={motorcycleData.brand}
-                placeholder="e.g., Honda, Yamaha"
-                onChangeText={(value) =>
-                  setMotorcycleData((prev) => ({
-                    ...prev,
-                    brand: value,
-                  }))
+                placeholder="Select brand"
+                options={
+                  catalogBrands.length > 0
+                    ? catalogBrands
+                    : BRAND_OPTIONS
                 }
+                onChange={handleBrandChange}
               />
 
-              <FormField
-                label="Model *"
+              <DropdownField
+                label="Model"
                 value={motorcycleData.model}
-                placeholder="e.g., CBR600RR"
-                onChangeText={(value) =>
+                placeholder={
+                  motorcycleData.brand
+                    ? "Select model"
+                    : "Select brand first"
+                }
+                options={getModelOptions()}
+                onChange={(value) =>
                   setMotorcycleData((prev) => ({
                     ...prev,
                     model: value,
@@ -432,23 +898,23 @@ export default function CustomerMotorcycles() {
                 }
               />
 
-              <FormField
-                label="Year *"
+              <DropdownField
+                label="Year"
                 value={motorcycleData.year}
-                placeholder="e.g., 2022"
-                keyboardType="number-pad"
-                onChangeText={(value) =>
+                placeholder="Select year"
+                options={YEAR_OPTIONS}
+                onChange={(value) =>
                   setMotorcycleData((prev) => ({
                     ...prev,
-                    year: value.replace(/\D/g, ""),
+                    year: value,
                   }))
                 }
               />
 
               <FormField
-                label="License Plate *"
+                label="Plate Number"
                 value={motorcycleData.plate}
-                placeholder="e.g., ABC-123"
+                placeholder="Enter plate number"
                 onChangeText={(value) =>
                   setMotorcycleData((prev) => ({
                     ...prev,
@@ -457,23 +923,12 @@ export default function CustomerMotorcycles() {
                 }
               />
 
-              <FormField
-                label="VIN"
-                value={motorcycleData.vin}
-                placeholder="Vehicle Identification Number"
-                onChangeText={(value) =>
-                  setMotorcycleData((prev) => ({
-                    ...prev,
-                    vin: value,
-                  }))
-                }
-              />
-
-              <FormField
+              <DropdownField
                 label="Color"
                 value={motorcycleData.color}
-                placeholder="e.g., Red"
-                onChangeText={(value) =>
+                placeholder="Select color"
+                options={COLOR_OPTIONS}
+                onChange={(value) =>
                   setMotorcycleData((prev) => ({
                     ...prev,
                     color: value,
@@ -481,11 +936,15 @@ export default function CustomerMotorcycles() {
                 }
               />
 
+              <Text style={styles.requiredNote}>
+                * All fields are required.
+              </Text>
+
               <View style={styles.modalButtons}>
                 <TouchableOpacity
                   style={styles.cancelButton}
-                  onPress={resetForm}
-                  disabled={saving}
+                  onPress={closeModal}
+                  disabled={loading}
                 >
                   <Text style={styles.cancelButtonText}>
                     Cancel
@@ -495,18 +954,15 @@ export default function CustomerMotorcycles() {
                 <TouchableOpacity
                   style={[
                     styles.saveButton,
-                    saving &&
-                      styles.disabledButton,
+                    loading && styles.disabledButton,
                   ]}
                   onPress={handleSave}
-                  disabled={saving}
+                  disabled={loading}
                 >
                   <Text style={styles.saveButtonText}>
-                    {saving
+                    {loading
                       ? "Saving..."
-                      : editingMoto
-                      ? "Update"
-                      : "Save"}
+                      : "Save Motorcycle"}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -515,85 +971,74 @@ export default function CustomerMotorcycles() {
         </View>
       </Modal>
 
-      {/* Delete Modal */}
+      {/* DELETE REQUEST MODAL */}
       <Modal
-        visible={showDeleteModal}
+        visible={showDeleteRequestModal}
         transparent
         animationType="fade"
-        onRequestClose={() =>
-          setShowDeleteModal(false)
-        }
+        onRequestClose={closeDeleteRequestModal}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.deleteModalCard}>
-            <View style={styles.deleteHeader}>
-              <Text style={styles.deleteTitle}>
+        <View style={styles.deleteRequestOverlay}>
+          <View style={styles.deleteRequestContainer}>
+            <View style={styles.deleteRequestHeader}>
+              <Text style={styles.deleteRequestTitle}>
                 Request Motorcycle Deletion
               </Text>
 
               <TouchableOpacity
-                onPress={() => {
-                  setShowDeleteModal(false);
-                  setDeletingMoto(null);
-                  setDeleteReason("");
-                }}
+                onPress={closeDeleteRequestModal}
+                disabled={deletionLoading}
               >
-                <Text style={styles.closeButton}>
-                  ×
-                </Text>
+                <Text style={styles.closeButton}>×</Text>
               </TouchableOpacity>
             </View>
 
-            {deletingMoto && (
-              <View style={styles.deletingMotoBox}>
-                <Text style={styles.deletingLabel}>
-                  Motorcycle to Delete
+            <Text style={styles.deleteRequestDescription}>
+              Your request will be sent to the administrator for
+              review. The motorcycle will remain registered until
+              the request is approved.
+            </Text>
+
+            {deletionMotorcycle && (
+              <View style={styles.deleteMotorcycleInfo}>
+                <Text style={styles.deleteMotorcycleName}>
+                  {deletionMotorcycle.brand}{" "}
+                  {deletionMotorcycle.model}
                 </Text>
 
-                <Text style={styles.deletingName}>
-                  {deletingMoto.brand}{" "}
-                  {deletingMoto.model} (
-                  {deletingMoto.year})
-                </Text>
-
-                <Text style={styles.deletingPlate}>
-                  Plate: {deletingMoto.plate}
+                <Text style={styles.deleteMotorcycleDetails}>
+                  {deletionMotorcycle.year} •{" "}
+                  {deletionMotorcycle.plate}
                 </Text>
               </View>
             )}
 
             <Text style={styles.reasonLabel}>
-              Reason for Deletion *
+              Reason for Deletion{" "}
+              <Text style={styles.required}>*</Text>
             </Text>
 
             <TextInput
-              value={deleteReason}
-              onChangeText={setDeleteReason}
               style={styles.reasonInput}
-              placeholder="Please explain why you want to delete this motorcycle..."
-              placeholderTextColor="#9ca3af"
+              value={deletionReason}
+              onChangeText={setDeletionReason}
+              placeholder="Enter your reason for requesting deletion"
+              placeholderTextColor="#9CA3AF"
               multiline
-              numberOfLines={5}
               textAlignVertical="top"
+              editable={!deletionLoading}
             />
 
-            <View style={styles.warningBox}>
-              <Text style={styles.warningText}>
-                This deletion request will be sent to
-                admin for approval. The motorcycle will
-                remain in your account until approved.
-              </Text>
-            </View>
+            <Text style={styles.reasonNote}>
+              Please provide a reason so the administrator can
+              review your request.
+            </Text>
 
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={styles.cancelButton}
-                onPress={() => {
-                  setShowDeleteModal(false);
-                  setDeletingMoto(null);
-                  setDeleteReason("");
-                }}
-                disabled={saving}
+                onPress={closeDeleteRequestModal}
+                disabled={deletionLoading}
               >
                 <Text style={styles.cancelButtonText}>
                   Cancel
@@ -602,17 +1047,20 @@ export default function CustomerMotorcycles() {
 
               <TouchableOpacity
                 style={[
-                  styles.submitDeleteButton,
-                  saving &&
-                    styles.disabledDeleteButton,
+                  styles.requestDeleteButton,
+                  deletionLoading && styles.disabledButton,
+                  !deletionReason.trim() &&
+                    styles.disabledButton,
                 ]}
-                onPress={handleConfirmDelete}
-                disabled={saving}
+                onPress={handleDeleteRequest}
+                disabled={
+                  deletionLoading || !deletionReason.trim()
+                }
               >
-                <Text style={styles.submitDeleteText}>
-                  {saving
-                    ? "Submitting..."
-                    : "Submit Request"}
+                <Text style={styles.requestDeleteButtonText}>
+                  {deletionLoading
+                    ? "Sending..."
+                    : "Send Request"}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -623,41 +1071,25 @@ export default function CustomerMotorcycles() {
   );
 }
 
-function DetailRow({ label, value }) {
-  return (
-    <View style={styles.detailRow}>
-      <Text style={styles.detailLabel}>
-        {label}
-      </Text>
-
-      <Text style={styles.detailValue}>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
 function FormField({
   label,
   value,
   placeholder,
   onChangeText,
-  keyboardType,
 }) {
   return (
-    <View style={styles.field}>
-      <Text style={styles.fieldLabel}>
-        {label}
+    <View style={styles.fieldContainer}>
+      <Text style={styles.label}>
+        {label} <Text style={styles.required}>*</Text>
       </Text>
 
       <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor="#9ca3af"
-        keyboardType={keyboardType || "default"}
         style={styles.input}
-        autoCapitalize="words"
+        value={value}
+        placeholder={placeholder}
+        placeholderTextColor="#9CA3AF"
+        onChangeText={onChangeText}
+        autoCapitalize="characters"
       />
     </View>
   );
@@ -666,219 +1098,175 @@ function FormField({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f9fafb",
   },
 
   content: {
-    padding: 16,
+    padding: 20,
     paddingBottom: 40,
   },
 
-  pageHeader: {
-    marginBottom: 18,
-  },
-
-  pageTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#111827",
-  },
-
-  pageSubtitle: {
-    fontSize: 12,
-    color: "#6b7280",
-    marginTop: 4,
-    marginBottom: 14,
-  },
-
-  addButton: {
-    alignSelf: "flex-start",
-    backgroundColor: "#1f2937",
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-  },
-
-  addButtonText: {
-    color: "#ffffff",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-
-  emptyCard: {
-    backgroundColor: "#ffffff",
+  emptyState: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    padding: 32,
+    alignItems: "center",
     borderWidth: 1,
-    borderColor: "#e5e7eb",
-    borderRadius: 14,
-    padding: 28,
-    alignItems: "center",
-  },
-
-  emptyIcon: {
-    width: 58,
-    height: 58,
-    borderRadius: 14,
-    backgroundColor: "#f3f4f6",
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 14,
-  },
-
-  emptyIconText: {
-    fontSize: 25,
+    borderColor: "#E5E7EB",
   },
 
   emptyTitle: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: "700",
     color: "#111827",
-    marginBottom: 7,
+    marginBottom: 8,
   },
 
   emptyText: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: "#6b7280",
+    fontSize: 14,
+    color: "#6B7280",
     textAlign: "center",
-    marginBottom: 18,
+    lineHeight: 21,
+    marginBottom: 20,
   },
 
-  emptyAddButton: {
+  emptyButton: {
     backgroundColor: "#111827",
-    borderRadius: 9,
-    paddingHorizontal: 16,
-    paddingVertical: 11,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
   },
 
-  emptyAddText: {
-    color: "#ffffff",
-    fontSize: 12,
+  emptyButtonText: {
+    color: "#FFFFFF",
     fontWeight: "600",
   },
 
-  motorcycleCard: {
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
+  list: {
+    gap: 16,
   },
 
-  cardTop: {
+  addButton: {
+    backgroundColor: "#111827",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignSelf: "flex-start",
+    marginBottom: 0,
+  },
+
+  addButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "600",
+  },
+
+  card: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+
+  cardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
+    marginBottom: 18,
   },
 
-  bikeIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 11,
-    backgroundColor: "#f3f4f6",
-    justifyContent: "center",
-    alignItems: "center",
+  cardTitleContainer: {
+    flex: 1,
   },
 
-  bikeIconText: {
-    fontSize: 22,
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#111827",
+  },
+
+  cardYear: {
+    fontSize: 13,
+    color: "#6B7280",
+    marginTop: 4,
   },
 
   cardActions: {
     flexDirection: "row",
-    gap: 7,
+    alignItems: "center",
+    gap: 8,
+    marginLeft: 10,
   },
 
   editButton: {
-    paddingHorizontal: 10,
+    minWidth: 62,
+    minHeight: 34,
+    paddingHorizontal: 12,
     paddingVertical: 7,
-    borderRadius: 8,
-    backgroundColor: "#f3f4f6",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EFF6FF",
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+    borderRadius: 9,
   },
 
   editText: {
-    color: "#374151",
-    fontSize: 11,
-    fontWeight: "600",
+    color: "#1D4ED8",
+    fontSize: 12,
+    fontWeight: "700",
   },
 
   deleteButton: {
-    paddingHorizontal: 10,
+    minWidth: 66,
+    minHeight: 34,
+    paddingHorizontal: 11,
     paddingVertical: 7,
-    borderRadius: 8,
-    backgroundColor: "#fef2f2",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    borderRadius: 9,
   },
 
   deleteText: {
-    color: "#dc2626",
-    fontSize: 11,
-    fontWeight: "600",
-  },
-
-  motorcycleName: {
-    fontSize: 17,
+    color: "#B91C1C",
+    fontSize: 12,
     fontWeight: "700",
-    color: "#111827",
-    marginTop: 14,
-    marginBottom: 12,
   },
 
-  pendingDeletionBox: {
-    backgroundColor: "#fffbeb",
-    borderWidth: 1,
-    borderColor: "#fde68a",
-    borderRadius: 8,
-    padding: 9,
-    marginBottom: 12,
-  },
-
-  pendingDeletionText: {
-    fontSize: 10,
-    color: "#92400e",
-  },
-
-  details: {
-    gap: 8,
-  },
-
-  detailRow: {
+  detailsRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 10,
+    gap: 40,
+  },
+
+  detailItem: {
+    minWidth: 100,
   },
 
   detailLabel: {
     fontSize: 12,
-    color: "#6b7280",
+    color: "#9CA3AF",
+    marginBottom: 4,
   },
 
   detailValue: {
-    flex: 1,
-    fontSize: 12,
-    color: "#111827",
+    fontSize: 14,
     fontWeight: "600",
-    textAlign: "right",
+    color: "#374151",
   },
 
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    padding: 16,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
   },
 
-  modalCard: {
-    width: "100%",
+  modalContainer: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     maxHeight: "90%",
-    backgroundColor: "#ffffff",
-    borderRadius: 16,
-    padding: 20,
-  },
-
-  deleteModalCard: {
-    width: "100%",
-    backgroundColor: "#ffffff",
-    borderRadius: 16,
     padding: 20,
   },
 
@@ -889,120 +1277,242 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
 
-  deleteHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 18,
-  },
-
   modalTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: "700",
     color: "#111827",
-  },
-
-  deleteTitle: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#dc2626",
-    marginRight: 12,
   },
 
   closeButton: {
-    fontSize: 28,
-    color: "#6b7280",
-    lineHeight: 28,
+    fontSize: 30,
+    lineHeight: 30,
+    color: "#6B7280",
   },
 
-  field: {
-    marginBottom: 15,
+  formScroll: {
+    paddingBottom: 10,
   },
 
-  fieldLabel: {
-    fontSize: 12,
+  fieldContainer: {
+    marginBottom: 16,
+  },
+
+  label: {
+    fontSize: 13,
     fontWeight: "600",
     color: "#374151",
-    marginBottom: 6,
+    marginBottom: 7,
+  },
+
+  required: {
+    color: "#DC2626",
   },
 
   input: {
-    height: 46,
+    height: 48,
     borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 9,
-    paddingHorizontal: 13,
-    fontSize: 13,
+    borderColor: "#D1D5DB",
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    fontSize: 14,
     color: "#111827",
-    backgroundColor: "#ffffff",
+    backgroundColor: "#FFFFFF",
+  },
+
+  dropdown: {
+    height: 48,
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 16,
+    backgroundColor: "#FFFFFF",
+  },
+
+  dropdownText: {
+    fontSize: 14,
+    color: "#111827",
+  },
+
+  dropdownPlaceholder: {
+    color: "#9CA3AF",
+  },
+
+  dropdownArrow: {
+    fontSize: 12,
+    color: "#6B7280",
+  },
+
+  dropdownOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "center",
+    padding: 25,
+  },
+
+  dropdownMenu: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    maxHeight: "70%",
+    overflow: "hidden",
+  },
+
+  dropdownTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#111827",
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+  },
+
+  dropdownScroll: {
+    maxHeight: 400,
+  },
+
+  dropdownOption: {
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F3F4F6",
+  },
+
+  dropdownOptionSelected: {
+    backgroundColor: "#F3F4F6",
+  },
+
+  dropdownOptionText: {
+    fontSize: 14,
+    color: "#374151",
+  },
+
+  dropdownOptionTextSelected: {
+    fontWeight: "700",
+    color: "#111827",
+  },
+
+  requiredNote: {
+    fontSize: 12,
+    color: "#6B7280",
+    marginTop: 2,
+    marginBottom: 18,
   },
 
   modalButtons: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 8,
+    paddingBottom: 10,
   },
 
   cancelButton: {
     flex: 1,
-    backgroundColor: "#e5e7eb",
-    borderRadius: 9,
-    paddingVertical: 12,
+    height: 48,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
     alignItems: "center",
+    justifyContent: "center",
   },
 
   cancelButtonText: {
     color: "#374151",
-    fontSize: 12,
     fontWeight: "600",
   },
 
   saveButton: {
     flex: 1,
-    backgroundColor: "#1f2937",
-    borderRadius: 9,
-    paddingVertical: 12,
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: "#111827",
     alignItems: "center",
-  },
-
-  disabledButton: {
-    opacity: 0.6,
+    justifyContent: "center",
   },
 
   saveButtonText: {
-    color: "#ffffff",
-    fontSize: 12,
+    color: "#FFFFFF",
     fontWeight: "600",
   },
 
-  deletingMotoBox: {
-    backgroundColor: "#f9fafb",
-    borderRadius: 10,
-    padding: 12,
+  requestDeleteButton: {
+    flex: 1,
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: "#DC2626",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  requestDeleteButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "600",
+  },
+
+  disabledButton: {
+    opacity: 0.5,
+  },
+
+  deleteRequestOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "center",
+    padding: 20,
+  },
+
+  deleteRequestContainer: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    padding: 20,
+  },
+
+  deleteRequestHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+
+  deleteRequestTitle: {
+    flex: 1,
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#111827",
+    marginRight: 10,
+  },
+
+  deleteRequestDescription: {
+    fontSize: 14,
+    color: "#6B7280",
+    lineHeight: 21,
     marginBottom: 16,
   },
 
-  deletingLabel: {
-    fontSize: 10,
-    color: "#6b7280",
-    marginBottom: 5,
+  deleteMotorcycleInfo: {
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 18,
   },
 
-  deletingName: {
-    fontSize: 13,
+  deleteMotorcycleName: {
+    fontSize: 16,
     fontWeight: "700",
     color: "#111827",
+    marginBottom: 4,
   },
 
-  deletingPlate: {
-    fontSize: 11,
-    color: "#6b7280",
-    marginTop: 3,
+  deleteMotorcycleDetails: {
+    fontSize: 13,
+    color: "#6B7280",
   },
 
   reasonLabel: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "600",
     color: "#374151",
     marginBottom: 7,
@@ -1011,44 +1521,20 @@ const styles = StyleSheet.create({
   reasonInput: {
     minHeight: 110,
     borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 9,
-    padding: 12,
-    fontSize: 13,
-    color: "#111827",
-    marginBottom: 12,
-  },
-
-  warningBox: {
-    backgroundColor: "#fffbeb",
-    borderWidth: 1,
-    borderColor: "#fde68a",
-    borderRadius: 9,
-    padding: 11,
-    marginBottom: 6,
-  },
-
-  warningText: {
-    fontSize: 11,
-    lineHeight: 17,
-    color: "#92400e",
-  },
-
-  submitDeleteButton: {
-    flex: 1,
-    backgroundColor: "#dc2626",
-    borderRadius: 9,
+    borderColor: "#D1D5DB",
+    borderRadius: 8,
+    paddingHorizontal: 14,
     paddingVertical: 12,
-    alignItems: "center",
+    fontSize: 14,
+    color: "#111827",
+    backgroundColor: "#FFFFFF",
   },
 
-  disabledDeleteButton: {
-    opacity: 0.6,
-  },
-
-  submitDeleteText: {
-    color: "#ffffff",
+  reasonNote: {
     fontSize: 12,
-    fontWeight: "600",
+    color: "#9CA3AF",
+    lineHeight: 18,
+    marginTop: 7,
+    marginBottom: 18,
   },
 });

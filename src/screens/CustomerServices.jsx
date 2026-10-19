@@ -6,7 +6,8 @@ import {
   doc,
   onSnapshot,
   runTransaction,
-  serverTimestamp
+  serverTimestamp,
+  writeBatch
 } from "firebase/firestore";
 
 import { onAuthStateChanged } from "firebase/auth";
@@ -14,6 +15,7 @@ import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "../firebase";
 
 import {
+  Alert,
   Modal,
   ScrollView,
   StyleSheet,
@@ -69,6 +71,13 @@ export default function CustomerServices() {
   });
 
   const [isSaving, setIsSaving] = useState(false);
+
+  // Feedback for completed service requests
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [feedbackService, setFeedbackService] = useState(null);
+  const [feedbackRating, setFeedbackRating] = useState(0);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
 
   /*
    * ============================================================
@@ -1136,6 +1145,20 @@ export default function CustomerServices() {
               serviceRequest
             );
 
+            const notificationRef = doc(collection(db, "notifications"));
+            transaction.set(notificationRef, {
+              recipientRole: "admin",
+              type: "service",
+              title: "New Service Request",
+              message: `${serviceRequest.motorcycle || "A customer motorcycle"} — ${serviceRequest.serviceType || "Service request"}`,
+              route: "/admin/services",
+              relatedId: serviceRef.id,
+              customerId: currentUser.uid,
+              customerName: currentUser.displayName || currentUser.email || "Customer",
+              read: false,
+              createdAt: serverTimestamp(),
+            });
+
             transaction.set(
               scheduleRef,
               {
@@ -1623,6 +1646,84 @@ export default function CustomerServices() {
       "waiting for parts",
       "quality check",
     ].includes(status);
+  };
+
+  /*
+   * ============================================================
+   * CUSTOMER FEEDBACK
+   * ============================================================
+   */
+
+  const openFeedbackModal = (service) => {
+    if (normalizeStatus(service.status) !== "completed") {
+      Alert.alert("Service not completed", "You can only rate a completed service.");
+      return;
+    }
+
+    setFeedbackService(service);
+    setFeedbackRating(Number(service.rating || 0));
+    setFeedbackComment(service.feedback || "");
+    setShowFeedbackModal(true);
+  };
+
+  const submitFeedback = async () => {
+    if (isSubmittingFeedback) return;
+
+    if (!currentUser?.uid || !feedbackService?.id) {
+      Alert.alert("Unable to submit", "Please log in again and try submitting your feedback.");
+      return;
+    }
+
+    if (normalizeStatus(feedbackService.status) !== "completed") {
+      Alert.alert("Service not completed", "You can only rate a completed service.");
+      return;
+    }
+
+    if (!Number.isInteger(feedbackRating) || feedbackRating < 1 || feedbackRating > 5) {
+      Alert.alert("Rating required", "Please select a rating from 1 to 5 stars.");
+      return;
+    }
+
+    setIsSubmittingFeedback(true);
+
+    try {
+      const serviceRef = doc(db, "services", feedbackService.id);
+      const feedbackRef = doc(db, "feedback", feedbackService.id);
+      const comment = feedbackComment.trim();
+      const batch = writeBatch(db);
+
+      batch.update(serviceRef, {
+        rating: feedbackRating,
+        feedback: comment,
+        feedbackSubmitted: true,
+        feedbackSubmittedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      batch.set(feedbackRef, {
+        serviceId: feedbackService.id,
+        customerId: currentUser.uid,
+        customerName: currentUser.displayName || currentUser.email || "Customer",
+        serviceType: feedbackService.serviceType || "Service",
+        rating: feedbackRating,
+        comment,
+        date: new Date().toLocaleDateString(),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      await batch.commit();
+      setShowFeedbackModal(false);
+      setFeedbackService(null);
+      setFeedbackRating(0);
+      setFeedbackComment("");
+      Alert.alert("Thank you!", "Your feedback has been submitted.");
+    } catch (error) {
+      console.error("Error submitting service feedback:", error);
+      Alert.alert("Submission failed", "Your feedback could not be submitted. Please try again.");
+    } finally {
+      setIsSubmittingFeedback(false);
+    }
   };
 
   /*
@@ -2380,17 +2481,14 @@ export default function CustomerServices() {
                     </View>
 
                     <TouchableOpacity
-                      style={
-                        styles.outlineButton
-                      }
-                      onPress={() => {}}
+                      style={styles.outlineButton}
+                      onPress={() => openFeedbackModal(service)}
+                      activeOpacity={0.8}
                     >
-                      <Text
-                        style={
-                          styles.outlineButtonText
-                        }
-                      >
-                        Edit Feedback
+                      <Text style={styles.outlineButtonText}>
+                        {service.feedbackSubmitted || Number(service.rating || 0) > 0
+                          ? "Edit Feedback"
+                          : "Rate This Service"}
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -2400,6 +2498,86 @@ export default function CustomerServices() {
           </>
         )}
       </ScrollView>
+
+      {/* ========================================================
+          CUSTOMER FEEDBACK MODAL
+          ======================================================== */}
+      <Modal
+        visible={showFeedbackModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          if (!isSubmittingFeedback) setShowFeedbackModal(false);
+        }}
+      >
+        <View style={styles.requestOverlay}>
+          <View style={styles.requestModal}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalTitle}>Rate Your Service</Text>
+                <Text style={styles.modalSubtitle}>
+                  {feedbackService?.serviceType || "Completed Service"}
+                </Text>
+              </View>
+              <TouchableOpacity
+                disabled={isSubmittingFeedback}
+                onPress={() => setShowFeedbackModal(false)}
+              >
+                <Text style={styles.closeButton}>×</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.formLabel}>HOW WAS YOUR EXPERIENCE?</Text>
+            <View style={{ flexDirection: "row", justifyContent: "center", marginVertical: 18 }}>
+              {[1, 2, 3, 4, 5].map((star) => (
+                <TouchableOpacity
+                  key={star}
+                  disabled={isSubmittingFeedback}
+                  onPress={() => setFeedbackRating(star)}
+                  style={{ paddingHorizontal: 7, paddingVertical: 2 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${star} star${star === 1 ? "" : "s"}`}
+                >
+                  <Text style={{ fontSize: 38, color: star <= feedbackRating ? "#F59E0B" : "#D1D5DB" }}>
+                    {star <= feedbackRating ? "★" : "☆"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[styles.formLabel, { marginBottom: 8 }]}>YOUR COMMENTS (OPTIONAL)</Text>
+            <TextInput
+              value={feedbackComment}
+              onChangeText={setFeedbackComment}
+              placeholder="Share your experience with the service..."
+              multiline
+              editable={!isSubmittingFeedback}
+              textAlignVertical="top"
+              style={[styles.descriptionInput, { marginBottom: 18 }]}
+              maxLength={1500}
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                disabled={isSubmittingFeedback}
+                onPress={() => setShowFeedbackModal(false)}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.continueButton, isSubmittingFeedback && styles.continueDisabled]}
+                disabled={isSubmittingFeedback}
+                onPress={submitFeedback}
+              >
+                <Text style={styles.continueButtonText}>
+                  {isSubmittingFeedback ? "Submitting..." : "Submit Feedback"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* ========================================================
           REQUEST / EDIT MODAL
@@ -2428,7 +2606,10 @@ export default function CustomerServices() {
           }
         >
           <View
-            style={styles.requestModal}
+            style={[
+              styles.requestModal,
+              styles.requestFormModal,
+            ]}
           >
             <ScrollView
               style={styles.requestScroll}
@@ -3598,6 +3779,50 @@ function TrackerLine({ active }) {
   );
 }
 
+function formatDisplayValue(value) {
+  if (value === null || value === undefined || value === "") {
+    return "-";
+  }
+
+  if (typeof value === "object") {
+    if (typeof value.toDate === "function") {
+      const date = value.toDate();
+
+      if (!Number.isNaN(date.getTime())) {
+        return date.toLocaleDateString("en-PH", {
+          timeZone: "Asia/Manila",
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        });
+      }
+    }
+
+    if (
+      typeof value.seconds === "number" &&
+      typeof value.nanoseconds === "number"
+    ) {
+      const date = new Date(
+        value.seconds * 1000 +
+          Math.floor(value.nanoseconds / 1000000)
+      );
+
+      if (!Number.isNaN(date.getTime())) {
+        return date.toLocaleDateString("en-PH", {
+          timeZone: "Asia/Manila",
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        });
+      }
+    }
+
+    return "-";
+  }
+
+  return String(value);
+}
+
 function InfoGrid({ items }) {
   return (
     <View style={styles.infoGrid}>
@@ -3620,7 +3845,7 @@ function InfoGrid({ items }) {
                 styles.infoValue
               }
             >
-              {value || "-"}
+              {formatDisplayValue(value)}
             </Text>
           </View>
         )
@@ -4027,9 +4252,14 @@ const styles = StyleSheet.create({
     overflow: "visible",
   },
 
+  requestFormModal: {
+    height: "92%",
+    maxHeight: "92%",
+  },
+
   requestScroll: {
-    overflow: "visible",
-    flexGrow: 0,
+    flex: 1,
+    minHeight: 0,
   },
 
   requestContent: {
@@ -4116,10 +4346,10 @@ const styles = StyleSheet.create({
   },
 
   dropdownMenu: {
-    position: "absolute",
+    position: "relative",
     left: 0,
     right: 0,
-    top: 53,
+    marginTop: 6,
     backgroundColor: "#ffffff",
     borderWidth: 1,
     borderColor: "#d1d5db",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -36,11 +36,6 @@ const RECIPIENTS = [
     name: "MPRSS Admin",
     role: "Service Shop",
   },
-  {
-    id: "super_admin",
-    name: "MPRSS Super Admin",
-    role: "Management",
-  },
 ];
 
 export default function CustomerMessages() {
@@ -59,9 +54,6 @@ export default function CustomerMessages() {
     useState([]);
 
   const [messageText, setMessageText] =
-    useState("");
-
-  const [searchText, setSearchText] =
     useState("");
 
   const [loading, setLoading] =
@@ -485,12 +477,26 @@ export default function CustomerMessages() {
         "messages"
       );
 
-      await addDoc(messagesRef, {
+      const messageRef = await addDoc(messagesRef, {
         senderId: currentUser.uid,
         senderRole: "customer",
         senderName:
           customerName || "MPRSS Rider",
         message: trimmedMessage,
+        createdAt: serverTimestamp(),
+      });
+
+      await addDoc(collection(db, "notifications"), {
+        recipientRole: "admin",
+        type: "message",
+        title: "New Customer Message",
+        message: `${customerName || currentUser.email || "Customer"}: ${trimmedMessage.slice(0, 160)}`,
+        route: "/admin/messages",
+        relatedId: selectedConversation.id,
+        conversationId: selectedConversation.id,
+        messageId: messageRef.id,
+        customerId: currentUser.uid,
+        read: false,
         createdAt: serverTimestamp(),
       });
 
@@ -571,41 +577,6 @@ export default function CustomerMessages() {
 
   /*
    * ==========================================
-   * SEARCH
-   * ==========================================
-   */
-
-  const filteredConversations =
-    useMemo(() => {
-      const search =
-        searchText.toLowerCase().trim();
-
-      if (!search) {
-        return conversations;
-      }
-
-      return conversations.filter(
-        (conversation) =>
-          (
-            conversation.recipientName ||
-            ""
-          )
-            .toLowerCase()
-            .includes(search) ||
-          (
-            conversation.lastMessage ||
-            ""
-          )
-            .toLowerCase()
-            .includes(search)
-      );
-    }, [
-      conversations,
-      searchText,
-    ]);
-
-  /*
-   * ==========================================
    * CURRENT CHAT
    * ==========================================
    */
@@ -666,14 +637,6 @@ export default function CustomerMessages() {
               )}
             </View>
 
-            <TextInput
-              value={searchText}
-              onChangeText={setSearchText}
-              placeholder="Search messages"
-              placeholderTextColor="#9ca3af"
-              style={styles.searchInput}
-            />
-
             <ScrollView
               showsVerticalScrollIndicator={
                 false
@@ -694,7 +657,7 @@ export default function CustomerMessages() {
                     Loading conversations...
                   </Text>
                 </View>
-              ) : filteredConversations.length ===
+              ) : conversations.length ===
                 0 ? (
                 <View
                   style={styles.noConversation}
@@ -704,11 +667,11 @@ export default function CustomerMessages() {
                       styles.noConversationText
                     }
                   >
-                    No conversations found.
+                    No conversations yet.
                   </Text>
                 </View>
               ) : (
-                filteredConversations.map(
+                conversations.map(
                   (conversation) => {
                     const isSelected =
                       selectedConversation?.id ===
@@ -1193,16 +1156,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
-  searchInput: {
-    margin: 14,
-    height: 44,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    paddingHorizontal: 12,
-    fontSize: 13,
-    color: "#111827",
-  },
 
   conversationList: {
     paddingHorizontal: 8,

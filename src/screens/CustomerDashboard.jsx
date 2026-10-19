@@ -15,96 +15,143 @@ import {
   collection,
   doc,
   onSnapshot,
-  query,
-  where,
 } from "firebase/firestore";
 
 import { auth, db } from "../firebase";
 
 import CustomerLayout from "../components/CustomerLayout";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Highest-Selling Parts — UI only
-// ─────────────────────────────────────────────────────────────────────────────
-
-const TOP_PARTS = [
-  {
-    id: 1,
-    name: "Front Brake Disc Pad Set",
-    category: "Brakes",
-    unitsSold: 2847,
-    image:
-      "https://images.unsplash.com/photo-1544515137-1950c9866aef?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&w=600&q=80",
-  },
-  {
-    id: 2,
-    name: "Drive Chain & Sprocket Kit",
-    category: "Drivetrain",
-    unitsSold: 2214,
-    image:
-      "https://images.unsplash.com/photo-1769537754999-724044ec2e32?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&w=600&q=80",
-  },
-  {
-    id: 3,
-    name: "Oil Filter (Pleated)",
-    category: "Engine",
-    unitsSold: 1983,
-    image:
-      "https://images.unsplash.com/photo-1777118947168-b6e806cb80cf?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&w=600&q=80",
-  },
-  {
-    id: 4,
-    name: "Iridium Spark Plug",
-    category: "Ignition",
-    unitsSold: 1756,
-    image:
-      "https://images.unsplash.com/photo-1782885044133-27c4df887d96?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&w=600&q=80",
-  },
-  {
-    id: 5,
-    name: "Rear Performance Tire",
-    category: "Wheels",
-    unitsSold: 1492,
-    image:
-      "https://images.unsplash.com/photo-1612692064035-df2d74a77cb8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&w=600&q=80",
-  },
-  {
-    id: 6,
-    name: "Front Brake Caliper",
-    category: "Brakes",
-    unitsSold: 1305,
-    image:
-      "https://images.unsplash.com/photo-1762012507780-060fe0bcc783?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&w=600&q=80",
-  },
-];
+// Highest-selling parts are loaded live from the admin inventory collection.
+const getUnitsSold = (item) =>
+  Number(
+    item?.unitsSold ??
+      item?.soldCount ??
+      item?.salesCount ??
+      item?.totalSold ??
+      item?.quantitySold ??
+      0
+  ) || 0;
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const CAROUSEL_WIDTH = SCREEN_WIDTH - 32;
 const CARD_WIDTH = CAROUSEL_WIDTH * 0.88;
+
+const normalizeText = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+
+const getDateObject = (value) => {
+  if (!value) return null;
+
+  if (typeof value?.toDate === "function") {
+    const date = value.toDate();
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+      ? new Date(`${raw}T00:00:00`)
+      : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  return null;
+};
+
+const getDateMillis = (value) =>
+  getDateObject(value)?.getTime() || 0;
+
+const formatServiceDate = (value) => {
+  const date = getDateObject(value);
+  return date
+    ? date.toLocaleDateString("en-PH", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : (value ? String(value) : "");
+};
+
+const serviceMatchesMotorcycle = (service, motorcycle, motorcycleCount) => {
+  if (!motorcycle) return true;
+
+  if (service?.motorcycleId) {
+    return service.motorcycleId === motorcycle.id;
+  }
+
+  const serviceMotorcycle = normalizeText(
+    service?.motorcycle || service?.motorcycleName || service?.motorcycleLabel
+  );
+  const motorcycleName = normalizeText(
+    `${motorcycle?.brand || ""} ${motorcycle?.model || ""}`
+  );
+  const plate = normalizeText(motorcycle?.plate);
+
+  if (serviceMotorcycle) {
+    return (motorcycleName && serviceMotorcycle.includes(motorcycleName)) ||
+      (plate && serviceMotorcycle.includes(plate));
+  }
+
+  return motorcycleCount === 1;
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Highest-Selling Parts Carousel
 // ─────────────────────────────────────────────────────────────────────────────
 
 function PartsCarousel() {
+  const [parts, setParts] = useState([]);
   const [current, setCurrent] = useState(0);
 
-  const goTo = (index) => {
-    setCurrent(
-      Math.max(0, Math.min(index, TOP_PARTS.length - 1))
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "inventory"),
+      (snapshot) => {
+        const inventoryParts = snapshot.docs
+          .map((item) => {
+            const data = item.data();
+            return {
+              id: item.id,
+              name: data.name || "Unnamed Part",
+              category: data.category || "Parts",
+              unitsSold: getUnitsSold(data),
+              quantity: Number(data.quantity || 0),
+              image: data.photoUrl || data.image || "",
+              visibleToCustomers: data.visibleToCustomers,
+              createdAt: data.createdAt,
+            };
+          })
+          .filter((item) => item.visibleToCustomers !== false)
+          .sort((a, b) => {
+            if (b.unitsSold !== a.unitsSold) return b.unitsSold - a.unitsSold;
+            return a.name.localeCompare(b.name);
+          });
+
+        setParts(inventoryParts);
+        setCurrent((index) => Math.min(index, Math.max(0, inventoryParts.length - 1)));
+      },
+      (error) => {
+        console.error("Error loading dashboard inventory:", error);
+        setParts([]);
+      }
     );
+
+    return unsubscribe;
+  }, []);
+
+  const goTo = (index) => {
+    setCurrent(Math.max(0, Math.min(index, parts.length - 1)));
   };
 
   const handleScrollEnd = (event) => {
     const offsetX = event.nativeEvent.contentOffset.x;
-
-    const index = Math.round(
-      offsetX / (CARD_WIDTH + 12)
-    );
-
-    setCurrent(
-      Math.max(0, Math.min(index, TOP_PARTS.length - 1))
-    );
+    setCurrent(Math.max(0, Math.min(Math.round(offsetX / (CARD_WIDTH + 12)), parts.length - 1)));
   };
 
   return (
@@ -112,154 +159,99 @@ function PartsCarousel() {
       <View style={styles.partsHeader}>
         <View style={styles.partsHeaderLeft}>
           <Text style={styles.partsTrendingIcon}>↗</Text>
-
-          <Text style={styles.partsSectionTitle}>
-            HIGHEST-SELLING PARTS
-          </Text>
+          <Text style={styles.partsSectionTitle}>HIGHEST-SELLING PARTS</Text>
         </View>
 
-        <View style={styles.partsNavigation}>
-          <TouchableOpacity
-            style={[
-              styles.partsNavButton,
-              current === 0 &&
-                styles.partsNavButtonDisabled,
-            ]}
-            disabled={current === 0}
-            onPress={() => goTo(current - 1)}
-          >
-            <Text style={styles.partsNavText}>‹</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.partsNavButton,
-              current === TOP_PARTS.length - 1 &&
-                styles.partsNavButtonDisabled,
-            ]}
-            disabled={current === TOP_PARTS.length - 1}
-            onPress={() => goTo(current + 1)}
-          >
-            <Text style={styles.partsNavText}>›</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        snapToInterval={CARD_WIDTH + 12}
-        decelerationRate="fast"
-        onMomentumScrollEnd={handleScrollEnd}
-        contentContainerStyle={styles.partsCarouselContent}
-      >
-        {TOP_PARTS.map((part, index) => (
-          <View
-            key={part.id}
-            style={[
-              styles.partCarouselCard,
-              {
-                width: CARD_WIDTH,
-                opacity:
-                  index === current ? 1 : 0.6,
-              },
-            ]}
-          >
-            <View style={styles.partImageContainer}>
-              <Image
-                source={{ uri: part.image }}
-                style={styles.partImage}
-                resizeMode="cover"
-              />
-
-              <View style={styles.partRankBadge}>
-                <Text style={styles.partRankText}>
-                  #{index + 1}
-                </Text>
-              </View>
-
-              <View
-                style={styles.highestSellingBadge}
-              >
-                <Text
-                  style={styles.highestSellingIcon}
-                >
-                  ↗
-                </Text>
-
-                <Text
-                  style={styles.highestSellingText}
-                >
-                  HIGHEST SELLING
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.partInfo}>
-              <View style={styles.partInfoText}>
-                <Text style={styles.partCategory}>
-                  {part.category}
-                </Text>
-
-                <Text
-                  style={styles.partName}
-                  numberOfLines={2}
-                >
-                  {part.name}
-                </Text>
-              </View>
-
-              <View style={styles.unitsContainer}>
-                <Text style={styles.unitsSold}>
-                  {part.unitsSold.toLocaleString()}
-                </Text>
-
-                <Text style={styles.unitsLabel}>
-                  units sold
-                </Text>
-              </View>
-            </View>
-
-            <View
-              style={styles.partProgressContainer}
+        {parts.length > 1 && (
+          <View style={styles.partsNavigation}>
+            <TouchableOpacity
+              style={[styles.partsNavButton, current === 0 && styles.partsNavButtonDisabled]}
+              disabled={current === 0}
+              onPress={() => goTo(current - 1)}
             >
-              <View
-                style={
-                  styles.partProgressBackground
-                }
-              >
-                <View
-                  style={[
-                    styles.partProgressFill,
-                    {
-                      width: `${
-                        (part.unitsSold /
-                          TOP_PARTS[0].unitsSold) *
-                        100
-                      }%`,
-                    },
-                  ]}
-                />
-              </View>
-            </View>
+              <Text style={styles.partsNavText}>‹</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.partsNavButton, current === parts.length - 1 && styles.partsNavButtonDisabled]}
+              disabled={current === parts.length - 1}
+              onPress={() => goTo(current + 1)}
+            >
+              <Text style={styles.partsNavText}>›</Text>
+            </TouchableOpacity>
           </View>
-        ))}
-      </ScrollView>
-
-      <View style={styles.partsPagination}>
-        {TOP_PARTS.map((_, index) => (
-          <TouchableOpacity
-            key={index}
-            onPress={() => goTo(index)}
-            style={[
-              styles.paginationDot,
-              index === current
-                ? styles.paginationDotActive
-                : styles.paginationDotInactive,
-            ]}
-          />
-        ))}
+        )}
       </View>
+
+      {parts.length ? (
+        <>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            snapToInterval={CARD_WIDTH + 12}
+            decelerationRate="fast"
+            onMomentumScrollEnd={handleScrollEnd}
+            contentContainerStyle={styles.partsCarouselContent}
+          >
+            {parts.map((part, index) => (
+              <View
+                key={part.id}
+                style={[styles.partCarouselCard, { width: CARD_WIDTH, opacity: index === current ? 1 : 0.6 }]}
+              >
+                <View style={styles.partImageContainer}>
+                  {part.image ? (
+                    <Image source={{ uri: part.image }} style={styles.partImage} resizeMode="cover" />
+                  ) : (
+                    <View style={[styles.partImage, styles.partImagePlaceholder]}>
+                      <Text style={styles.partPlaceholderText}>PART</Text>
+                    </View>
+                  )}
+                  <View style={styles.partRankBadge}>
+                    <Text style={styles.partRankText}>#{index + 1}</Text>
+                  </View>
+                  <View style={styles.highestSellingBadge}>
+                    <Text style={styles.highestSellingIcon}>↗</Text>
+                    <Text style={styles.highestSellingText}>HIGHEST SELLING</Text>
+                  </View>
+                </View>
+
+                <View style={styles.partInfo}>
+                  <View style={styles.partInfoText}>
+                    <Text style={styles.partCategory}>{part.category}</Text>
+                    <Text style={styles.partName} numberOfLines={2}>{part.name}</Text>
+                  </View>
+                  <View style={styles.unitsContainer}>
+                    <Text style={styles.unitsSold}>{part.unitsSold.toLocaleString()}</Text>
+                    <Text style={styles.unitsLabel}>units sold</Text>
+                  </View>
+                </View>
+
+                <View style={styles.partProgressContainer}>
+                  <View style={styles.partProgressBackground}>
+                    <View
+                      style={[styles.partProgressFill, { width: `${parts[0]?.unitsSold > 0 ? (part.unitsSold / parts[0].unitsSold) * 100 : 0}%` }]}
+                    />
+                  </View>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+          {parts.length > 1 && (
+            <View style={styles.partsPagination}>
+              {parts.map((part, index) => (
+                <TouchableOpacity
+                  key={part.id}
+                  onPress={() => goTo(index)}
+                  style={[styles.paginationDot, index === current ? styles.paginationDotActive : styles.paginationDotInactive]}
+                />
+              ))}
+            </View>
+          )}
+        </>
+      ) : (
+        <View style={styles.partsEmptyState}>
+          <Text style={styles.partsEmptyText}>No parts are currently available in the admin inventory.</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -377,24 +369,23 @@ export default function CustomerDashboard() {
       return undefined;
     }
 
-    const motorcyclesQuery = query(
-      collection(db, "motorcycles"),
-      where(
-        "customerId",
-        "==",
-        currentUser.uid
-      )
-    );
-
     const unsubscribe = onSnapshot(
-      motorcyclesQuery,
+      collection(db, "motorcycles"),
       (snapshot) => {
-        const motorcycleList = snapshot.docs.map(
-          (motorcycleDoc) => ({
+        const motorcycleList = snapshot.docs
+          .map((motorcycleDoc) => ({
             id: motorcycleDoc.id,
             ...motorcycleDoc.data(),
-          })
-        );
+          }))
+          .filter(
+            (motorcycle) =>
+              motorcycle.customerId === currentUser.uid ||
+              motorcycle.customerUid === currentUser.uid ||
+              motorcycle.userId === currentUser.uid ||
+              motorcycle.userUid === currentUser.uid ||
+              String(motorcycle.customerEmail || "").toLowerCase() ===
+                String(currentUser.email || "").toLowerCase()
+          );
 
         console.log(
           "Dashboard motorcycles synced:",
@@ -418,7 +409,7 @@ export default function CustomerDashboard() {
     );
 
     return unsubscribe;
-  }, [currentUser?.uid]);
+  }, [currentUser?.uid, currentUser?.email]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Firebase Services
@@ -431,24 +422,23 @@ export default function CustomerDashboard() {
       return undefined;
     }
 
-    const servicesQuery = query(
-      collection(db, "services"),
-      where(
-        "customerId",
-        "==",
-        currentUser.uid
-      )
-    );
-
     const unsubscribe = onSnapshot(
-      servicesQuery,
+      collection(db, "services"),
       (snapshot) => {
-        const serviceList = snapshot.docs.map(
-          (serviceDoc) => ({
+        const serviceList = snapshot.docs
+          .map((serviceDoc) => ({
             id: serviceDoc.id,
             ...serviceDoc.data(),
-          })
-        );
+          }))
+          .filter(
+            (service) =>
+              service.customerId === currentUser.uid ||
+              service.customerUid === currentUser.uid ||
+              service.userId === currentUser.uid ||
+              service.userUid === currentUser.uid ||
+              String(service.customerEmail || "").toLowerCase() ===
+                String(currentUser.email || "").toLowerCase()
+          );
 
         console.log(
           "Dashboard services synced:",
@@ -472,7 +462,7 @@ export default function CustomerDashboard() {
     );
 
     return unsubscribe;
-  }, [currentUser?.uid]);
+  }, [currentUser?.uid, currentUser?.email]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Always keep these as arrays
@@ -581,9 +571,98 @@ export default function CustomerDashboard() {
   // ─────────────────────────────────────────────────────────────────────────
 
   const currentService =
-    activeServices.length > 0
-      ? activeServices[0]
-      : null;
+    activeServices.find((service) =>
+      serviceMatchesMotorcycle(
+        service,
+        activeMoto,
+        motorcycleList.length
+      )
+    ) || null;
+
+  // Derive these dashboard values from the live Firestore service records.
+  const motorcycleServices = serviceList.filter((service) =>
+    serviceMatchesMotorcycle(
+      service,
+      activeMoto,
+      motorcycleList.length
+    )
+  );
+
+  const lastCompletedService = motorcycleServices
+    .filter(
+      (service) =>
+        String(service?.status || "").trim().toLowerCase() ===
+        "completed"
+    )
+    .sort((a, b) => {
+      const aDate = getDateMillis(
+        a?.completedAt ||
+          a?.preferredDate ||
+          a?.date ||
+          a?.updatedAt ||
+          a?.createdAt
+      );
+      const bDate = getDateMillis(
+        b?.completedAt ||
+          b?.preferredDate ||
+          b?.date ||
+          b?.updatedAt ||
+          b?.createdAt
+      );
+      return bDate - aDate;
+    })[0];
+
+  const lastServiceValue =
+    formatServiceDate(
+      lastCompletedService?.completedAt ||
+        lastCompletedService?.preferredDate ||
+        lastCompletedService?.date ||
+        lastCompletedService?.updatedAt ||
+        lastCompletedService?.createdAt
+    ) ||
+    formatServiceDate(activeMoto?.lastService) ||
+    "No service recorded";
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const nextDueService = motorcycleServices
+    .filter((service) => {
+      const status = String(service?.status || "")
+        .trim()
+        .toLowerCase();
+      const dateValue =
+        service?.preferredDate ||
+        service?.scheduledDate ||
+        service?.date ||
+        service?.nextDue;
+      const date = getDateObject(dateValue);
+
+      return (
+        date &&
+        date >= today &&
+        !["completed", "rejected", "cancelled", "canceled"].includes(status)
+      );
+    })
+    .sort((a, b) => {
+      const aDate = getDateMillis(
+        a?.preferredDate || a?.scheduledDate || a?.date || a?.nextDue
+      );
+      const bDate = getDateMillis(
+        b?.preferredDate || b?.scheduledDate || b?.date || b?.nextDue
+      );
+      return aDate - bDate;
+    })[0];
+
+  const nextDueValue =
+    formatServiceDate(
+      nextDueService?.preferredDate ||
+        nextDueService?.scheduledDate ||
+        nextDueService?.date ||
+        nextDueService?.nextDue
+    ) ||
+    formatServiceDate(activeMoto?.nextDue) ||
+    "No upcoming service";
 
   // ─────────────────────────────────────────────────────────────────────────
   // Firebase Customer Display Information
@@ -625,14 +704,6 @@ export default function CustomerDashboard() {
           </View>
         </View>
 
-        <TouchableOpacity
-          style={styles.notificationButton}
-          onPress={() => {}}
-        >
-          <Text style={styles.notificationIcon}>
-            ●
-          </Text>
-        </TouchableOpacity>
       </View>
 
       <ScrollView
@@ -738,7 +809,7 @@ export default function CustomerDashboard() {
                 <Text
                   style={styles.statValueDark}
                 >
-                  {activeMoto.lastService || "—"}
+                  {lastServiceValue}
                 </Text>
               </View>
 
@@ -752,7 +823,7 @@ export default function CustomerDashboard() {
                 <Text
                   style={styles.statValueDark}
                 >
-                  {activeMoto.nextDue || "—"}
+                  {nextDueValue}
                 </Text>
               </View>
             </View>
@@ -761,6 +832,44 @@ export default function CustomerDashboard() {
 
         {/* Highest-Selling Parts */}
         <PartsCarousel />
+
+        {/* Quick Actions */}
+        <View style={styles.section}>
+          <Text style={styles.overline}>QUICK ACTIONS</Text>
+          <View style={styles.quickGrid}>
+            <TouchableOpacity
+              activeOpacity={0.78}
+              accessibilityRole="button"
+              style={styles.quickCard}
+              onPress={() => goTo("/parts-catalog")}
+            >
+              <View style={styles.quickIcon}><Text style={styles.quickIconText}>◇</Text></View>
+              <Text style={styles.quickText} numberOfLines={2}>Browse Parts</Text>
+              <Text style={styles.quickArrow}>↗</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.78}
+              accessibilityRole="button"
+              style={styles.quickCard}
+              onPress={() => goTo("/builds")}
+            >
+              <View style={styles.quickIcon}><Text style={styles.quickIconText}>▤</Text></View>
+              <Text style={styles.quickText} numberOfLines={2}>My Builds</Text>
+              <Text style={styles.quickArrow}>↗</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.78}
+              accessibilityRole="button"
+              style={styles.quickCard}
+              onPress={() => goTo("/community-builds")}
+            >
+              <View style={styles.quickIcon}><Text style={styles.quickIconText}>◎</Text></View>
+              <Text style={styles.quickText} numberOfLines={2}>Community Builds</Text>
+              <Text style={styles.quickArrow}>↗</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
 
         {/* Current Service */}
         <View style={styles.card}>
@@ -826,31 +935,6 @@ export default function CustomerDashboard() {
           )}
         </View>
 
-        {/* Next Maintenance */}
-        <View style={styles.card}>
-          <Text style={styles.overline}>
-            NEXT MAINTENANCE
-          </Text>
-
-          <View style={styles.maintenanceRow}>
-            <View style={styles.maintenanceIcon}>
-              <Text style={styles.wrenchIcon}>
-                W
-              </Text>
-            </View>
-
-            <View style={styles.maintenanceInfo}>
-              <Text style={styles.cardTitle}>
-                Oil Change
-              </Text>
-
-              <Text style={styles.cardSub}>
-                Due: March 15, 2026
-              </Text>
-            </View>
-          </View>
-        </View>
-
         {/* Maintenance History */}
         <View style={styles.card}>
           <Text style={styles.overline}>
@@ -903,83 +987,6 @@ export default function CustomerDashboard() {
                 Upcoming
               </Text>
             </View>
-          </View>
-        </View>
-
-        {/* Quick Actions */}
-        <View style={styles.section}>
-          <Text style={styles.overline}>
-            QUICK ACTIONS
-          </Text>
-
-          <View style={styles.quickGrid}>
-            <TouchableOpacity
-              style={styles.quickCard}
-              onPress={() =>
-                goTo("/services")
-              }
-            >
-              <View style={styles.quickIcon}>
-                <Text style={styles.quickIconText}>
-                  +
-                </Text>
-              </View>
-
-              <Text style={styles.quickText}>
-                Request Service
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.quickCard}
-              onPress={() =>
-                goTo("/ai-assistant")
-              }
-            >
-              <View style={styles.quickIcon}>
-                <Text style={styles.quickIconText}>
-                  ✦
-                </Text>
-              </View>
-
-              <Text style={styles.quickText}>
-                AI Assistant
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.quickCard}
-              onPress={() =>
-                goTo("/parts-catalog")
-              }
-            >
-              <View style={styles.quickIcon}>
-                <Text style={styles.quickIconText}>
-                  □
-                </Text>
-              </View>
-
-              <Text style={styles.quickText}>
-                Browse Parts
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.quickCard}
-              onPress={() =>
-                goTo("/builds")
-              }
-            >
-              <View style={styles.quickIcon}>
-                <Text style={styles.quickIconText}>
-                  ▤
-                </Text>
-              </View>
-
-              <Text style={styles.quickText}>
-                My Builds
-              </Text>
-            </TouchableOpacity>
           </View>
         </View>
 
@@ -1406,6 +1413,19 @@ const styles = StyleSheet.create({
     position: "relative",
   },
 
+  partImagePlaceholder: {
+    backgroundColor: "#e5e7eb",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  partPlaceholderText: {
+    color: "#6b7280",
+    fontSize: 16,
+    fontWeight: "700",
+    letterSpacing: 2,
+  },
+
   partImage: {
     width: "100%",
     height: "100%",
@@ -1520,6 +1540,20 @@ const styles = StyleSheet.create({
     height: "100%",
     backgroundColor: "#0a0f1a",
     borderRadius: 999,
+  },
+
+  partsEmptyState: {
+    backgroundColor: "#ffffff",
+    borderRadius: 14,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: "#eef0f2",
+  },
+
+  partsEmptyText: {
+    color: "#6b7280",
+    fontSize: 12,
+    lineHeight: 18,
   },
 
   partsPagination: {
@@ -1687,40 +1721,61 @@ const styles = StyleSheet.create({
 
   quickGrid: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
+    flexWrap: "nowrap",
+    gap: 9,
+    marginTop: 10,
   },
 
   quickCard: {
-    width: "48%",
+    flex: 1,
+    minWidth: 0,
+    minHeight: 78,
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#eef0f2",
-    borderRadius: 14,
-    padding: 14,
+    borderColor: "#e5e7eb",
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    shadowColor: "#111827",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
 
   quickIcon: {
-    width: 34,
-    height: 34,
+    width: 28,
+    height: 28,
     borderRadius: 9,
-    backgroundColor: "#0a0f1a",
+    backgroundColor: "#111827",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 10,
+    marginBottom: 5,
   },
 
   quickIconText: {
     color: "#ffffff",
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: "700",
   },
 
   quickText: {
-    color: "#374151",
-    fontSize: 12,
-    fontWeight: "600",
-    lineHeight: 17,
+    color: "#1f2937",
+    fontSize: 11,
+    fontWeight: "700",
+    lineHeight: 14,
+    textAlign: "center",
+  },
+
+  quickArrow: {
+    position: "absolute",
+    top: 5,
+    right: 6,
+    color: "#9ca3af",
+    fontSize: 10,
+    fontWeight: "700",
   },
 
   sectionHeader: {

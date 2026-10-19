@@ -7,6 +7,8 @@ import {
   updatePassword,
 } from "firebase/auth";
 import {
+  addDoc,
+  collection,
   doc,
   onSnapshot,
   serverTimestamp,
@@ -537,6 +539,19 @@ export default function CustomerProfile() {
         },
         updatedAt: serverTimestamp(),
       });
+
+      // Admin notification is a separate document from the customer profile update.
+      await addDoc(collection(db, "notifications"), {
+          recipientRole: "admin",
+          type: "customer",
+          title: "Account Deletion Request",
+          message: `${profile.fullName || currentUser.email || "A customer"} requested account deletion.`,
+          route: "/admin/motorcycle-deletions",
+          relatedId: currentUser.uid,
+          customerId: currentUser.uid,
+          read: false,
+          createdAt: serverTimestamp(),
+        });
 
       setAccountDeletionPending(true);
       setDeleteAccountReason("");

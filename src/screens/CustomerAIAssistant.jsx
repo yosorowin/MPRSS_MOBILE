@@ -1,65 +1,29 @@
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-    Alert,
-    Modal,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  Image,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 import CustomerLayout from "../components/CustomerLayout";
 
+import { onAuthStateChanged } from "firebase/auth";
 import {
-    getMotorcycles,
-    subscribeToMotorcycles,
-} from "../data/motorcycleStore";
-
-const inventory = [
-  {
-    id: "part-1",
-    name: "Engine Oil 10W-40",
-    brand: "Motul",
-    category: "Lubricants",
-    price: 25,
-    visibleToCustomers: true,
-  },
-  {
-    id: "part-2",
-    name: "Brake Pads - Front",
-    brand: "Brembo",
-    category: "Brake System",
-    price: 85,
-    visibleToCustomers: true,
-  },
-  {
-    id: "part-3",
-    name: "Air Filter",
-    brand: "K&N",
-    category: "Engine",
-    price: 35,
-    visibleToCustomers: true,
-  },
-  {
-    id: "part-4",
-    name: "Chain Lubricant",
-    brand: "Motul",
-    category: "Lubricants",
-    price: 18,
-    visibleToCustomers: true,
-  },
-  {
-    id: "part-5",
-    name: "Spark Plugs (Set of 4)",
-    brand: "NGK",
-    category: "Engine",
-    price: 48,
-    visibleToCustomers: true,
-  },
-];
+  addDoc,
+  collection,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  where,
+} from "firebase/firestore";
+import { auth, db } from "../firebase";
 
 export default function CustomerAIAssistant() {
   const router = useRouter();
@@ -67,6 +31,10 @@ export default function CustomerAIAssistant() {
   const [mode, setMode] = useState("recommendation");
 
   const [motorcycles, setMotorcycles] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [analysisHistory, setAnalysisHistory] = useState([]);
+  const [currentUser, setCurrentUser] = useState(auth.currentUser);
+  const [firebaseLoading, setFirebaseLoading] = useState(true);
 
   const [formData, setFormData] = useState({
     motorcycle: "",
@@ -93,22 +61,108 @@ export default function CustomerAIAssistant() {
 
   const [buildName, setBuildName] = useState("");
 
+  // Keep the signed-in user in sync with Firebase Authentication.
   useEffect(() => {
-    const updateMotorcycles = () => {
-      setMotorcycles(getMotorcycles());
-    };
-
-    updateMotorcycles();
-
-    const unsubscribe =
-      subscribeToMotorcycles(updateMotorcycles);
-
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      if (!user) {
+        setMotorcycles([]);
+        setInventory([]);
+        setFirebaseLoading(false);
+      } else {
+        setFirebaseLoading(true);
+      }
+    });
     return unsubscribe;
   }, []);
 
-  const visibleInventory = inventory.filter(
-    (part) => part.visibleToCustomers
-  );
+  // Subscribe to this customer's motorcycles and the shop's inventory.
+  useEffect(() => {
+    if (!currentUser?.uid) return undefined;
+
+    setFirebaseLoading(true);
+    const motorcyclesQuery = query(
+      collection(db, "motorcycles"),
+      where("customerId", "==", currentUser.uid)
+    );
+
+    const unsubscribeMotorcycles = onSnapshot(
+      motorcyclesQuery,
+      (snapshot) => {
+        const items = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+        setMotorcycles(items);
+        setFirebaseLoading(false);
+      },
+      (error) => {
+        console.error("Failed to load motorcycles:", error);
+        setFirebaseLoading(false);
+        Alert.alert(
+          "Motorcycles unavailable",
+          "We couldn't load your registered motorcycles. Check your connection and Firestore permissions."
+        );
+      }
+    );
+
+    const unsubscribeInventory = onSnapshot(
+      collection(db, "inventory"),
+      (snapshot) => {
+        const items = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+        setInventory(items.filter((part) => part.visibleToCustomers === true));
+      },
+      (error) => {
+        console.error("Failed to load inventory:", error);
+        Alert.alert(
+          "Inventory unavailable",
+          "We couldn't load parts from the shop. Check your Firestore permissions."
+        );
+      }
+    );
+
+    return () => {
+      unsubscribeMotorcycles();
+      unsubscribeInventory();
+    };
+  }, [currentUser?.uid]);
+
+  // Keep a short list of this customer's previous AI analyses in sync with Firestore.
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      setAnalysisHistory([]);
+      return undefined;
+    }
+
+    const historyQuery = query(
+      collection(db, "aiAnalysisHistory"),
+      where("userId", "==", currentUser.uid)
+    );
+
+    return onSnapshot(
+      historyQuery,
+      (snapshot) => {
+        const entries = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+        entries.sort((a, b) => {
+          const aTime = a.createdAt?.toMillis?.() || 0;
+          const bTime = b.createdAt?.toMillis?.() || 0;
+          return bTime - aTime;
+        });
+        setAnalysisHistory(entries.slice(0, 5));
+      },
+      (error) => {
+        console.error("Failed to load AI analysis history:", error);
+      }
+    );
+  }, [currentUser?.uid]);
+
+  const visibleInventory = useMemo(() => inventory, [inventory]);
 
   const handlePartToggle = (partId) => {
     setSelectedParts((previous) =>
@@ -127,93 +181,34 @@ export default function CustomerAIAssistant() {
     }
   };
 
+  // UI-only handler: keep the button responsive without running AI, API, or rule-based analysis.
   const handleAnalyze = () => {
+    if (!currentUser?.uid) {
+      Alert.alert("Sign in required", "Please sign in before using the AI Assistant.");
+      return;
+    }
     if (motorcycles.length === 0) {
       setShowNoMotorcycleModal(true);
       return;
     }
-
     if (!formData.motorcycle) {
-      Alert.alert(
-        "Select Motorcycle",
-        "Please select a motorcycle first."
-      );
+      Alert.alert("Select Motorcycle", "Please select a motorcycle first.");
+      return;
+    }
+    if (mode === "recommendation" && !formData.goal) {
+      Alert.alert("Select Goal", "Please select your goal first.");
+      return;
+    }
+    if (mode === "evaluation" && selectedParts.length === 0) {
+      Alert.alert("Select Parts", "Please select at least one part to evaluate.");
       return;
     }
 
-    if (
-      mode === "recommendation" &&
-      !formData.goal
-    ) {
-      Alert.alert(
-        "Select Goal",
-        "Please select your goal first."
-      );
-      return;
-    }
-
-    if (
-      mode === "evaluation" &&
-      selectedParts.length === 0
-    ) {
-      Alert.alert(
-        "Select Parts",
-        "Please select at least one part to evaluate."
-      );
-      return;
-    }
-
-    setLoading(true);
     setResult(null);
-
-    setTimeout(() => {
-      if (mode === "recommendation") {
-        setResult({
-          type: "recommendation",
-          suggestions: [
-            {
-              name: "Performance Exhaust System",
-              compatibility: 95,
-              safetyNote:
-                "Safe - Ensure professional installation",
-            },
-            {
-              name: "High-Flow Air Filter",
-              compatibility: 98,
-              safetyNote:
-                "Safe - Compatible with stock ECU",
-            },
-            {
-              name: "ECU Flash Tune",
-              compatibility: 90,
-              safetyNote:
-                "Caution - Requires dyno tuning",
-            },
-          ],
-        });
-      } else {
-        setResult({
-          type: "evaluation",
-          status: "Safe",
-          compatibility: 92,
-          recommendations: [
-            "All selected parts are compatible",
-            "Professional installation recommended",
-            "Consider regular maintenance checks",
-          ],
-          selectedParts: selectedParts
-            .map(
-              (id) =>
-                inventory.find(
-                  (part) => part.id === id
-                )?.name
-            )
-            .filter(Boolean),
-        });
-      }
-
-      setLoading(false);
-    }, 1500);
+    Alert.alert(
+      "AI Assistant UI Only",
+      "The analysis feature is currently disabled. Your selections are kept, but no AI, API, or rule-based analysis was run."
+    );
   };
 
   const handleSave = () => {
@@ -224,30 +219,150 @@ export default function CustomerAIAssistant() {
     setShowSaveModal(true);
   };
 
-  const handleConfirmSave = () => {
-    setShowSaveModal(false);
+  const handleConfirmSave = async () => {
+    if (!currentUser?.uid) {
+      Alert.alert("Sign in required", "Please sign in again before saving a build.");
+      return;
+    }
+    if (!result) {
+      Alert.alert("No results", "Analyze your setup before saving a build.");
+      return;
+    }
 
     const finalName =
-      buildName ||
-      `${formData.motorcycle || "My"} ${
-        formData.goal || "Custom"
-      } Build`;
+      buildName.trim() ||
+      `${formData.motorcycle || "My"} ${formData.goal || "Custom"} Build`;
 
-    setBuildName("");
+    try {
+      const savedBuildRef = await addDoc(collection(db, "builds"), {
+        userId: currentUser.uid,
+        name: finalName,
+        motorcycle: formData.motorcycle,
+        goal: formData.goal || null,
+        mode,
+        additionalNotes: formData.parts || "",
+        selectedParts: selectedParts.map((id) => {
+          const part = visibleInventory.find((item) => item.id === id);
+          return part ? { id: part.id, name: part.name, brand: part.brand || "", category: part.category || "", price: Number(part.price) || 0 } : { id, name: "Unknown part" };
+        }),
+        result,
+        createdAt: serverTimestamp(),
+      });
 
-    Alert.alert(
-      "Build Saved",
-      `"${finalName}" has been saved successfully.`
-    );
+      const riskLevel = String(
+        result?.status || result?.riskLevel || result?.safetyLevel || ""
+      ).toLowerCase();
+
+      if (["warning", "dangerous", "danger"].includes(riskLevel)) {
+        const alertRef = await addDoc(collection(db, "aiAlerts"), {
+          customerId: currentUser.uid,
+          userId: currentUser.uid,
+          customerName: currentUser.displayName || currentUser.email?.split("@")[0] || "Customer",
+          buildId: savedBuildRef.id,
+          buildName: finalName,
+          motorcycle: formData.motorcycle,
+          riskLevel: riskLevel === "danger" ? "Dangerous" : riskLevel.charAt(0).toUpperCase() + riskLevel.slice(1),
+          status: "New",
+          modification: (selectedParts || []).map((id) =>
+            visibleInventory.find((part) => part.id === id)?.name
+          ).filter(Boolean).join(", "),
+          result,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          adminNotified: false,
+        });
+
+        await addDoc(collection(db, "notifications"), {
+          customerId: currentUser.uid,
+          recipientRole: "customer",
+          type: "ai_safety_alert",
+          title: `${riskLevel === "warning" ? "Warning" : "Dangerous"} Build Alert`,
+          message: riskLevel === "warning"
+            ? `Your build "${finalName}" has a warning-level safety risk and needs review.`
+            : `Your build "${finalName}" has been rated dangerous. Please review the safety recommendations before using this setup.`,
+          route: "/ai-assistant",
+          alertId: alertRef.id,
+          riskLevel: riskLevel === "danger" ? "Dangerous" : riskLevel.charAt(0).toUpperCase() + riskLevel.slice(1),
+          read: false,
+          createdAt: serverTimestamp(),
+        });
+
+        // Notify administrators about builds that need a safety review.
+        try {
+          const normalizedRiskLevel = riskLevel === "danger"
+            ? "Dangerous"
+            : riskLevel.charAt(0).toUpperCase() + riskLevel.slice(1);
+          await addDoc(collection(db, "notifications"), {
+            recipientRole: "admin",
+            type: "ai_safety_alert",
+            title: `${normalizedRiskLevel} AI Safety Alert`,
+            message: `${currentUser.displayName || currentUser.email?.split("@")[0] || "A customer"} saved the build "${finalName}" with a ${normalizedRiskLevel.toLowerCase()} safety rating.`,
+            route: "/admin/ai-safety",
+            relatedId: alertRef.id,
+            alertId: alertRef.id,
+            buildId: savedBuildRef.id,
+            buildName: finalName,
+            customerId: currentUser.uid,
+            customerName: currentUser.displayName || currentUser.email?.split("@")[0] || "Customer",
+            motorcycle: formData.motorcycle,
+            riskLevel: normalizedRiskLevel,
+            read: false,
+            createdAt: serverTimestamp(),
+          });
+        } catch (notificationError) {
+          // The safety alert is already saved; notification failure must not undo it.
+          console.error("Failed to notify admin about AI safety alert:", notificationError);
+        }
+      }
+
+      setShowSaveModal(false);
+      setBuildName("");
+      Alert.alert("Build Saved", `"${finalName}" has been saved to My Builds.`);
+    } catch (error) {
+      console.error("Failed to save build:", error);
+      Alert.alert("Save failed", "Your build could not be saved. Please try again.");
+    }
   };
 
   const handleRequestService = () => {
     setShowConfirmModal(true);
   };
 
-  const handleConfirmSubmit = () => {
-    setShowConfirmModal(false);
-    router.push("/services");
+  const handleConfirmSubmit = async () => {
+    if (!currentUser?.uid) {
+      Alert.alert("Sign in required", "Please sign in again before submitting a service request.");
+      return;
+    }
+    if (!formData.motorcycle) {
+      Alert.alert("Select Motorcycle", "Please select a motorcycle first.");
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, "services"), {
+        userId: currentUser.uid,
+        motorcycle: formData.motorcycle,
+        serviceType: mode === "recommendation"
+          ? "AI Recommended Parts Installation"
+          : "Parts Compatibility Check",
+        goal: formData.goal || null,
+        additionalNotes: formData.parts || "",
+        selectedParts: selectedParts.map((id) => {
+          const part = visibleInventory.find((item) => item.id === id);
+          return part ? { id: part.id, name: part.name, brand: part.brand || "", category: part.category || "", price: Number(part.price) || 0 } : { id, name: "Unknown part" };
+        }),
+        aiResult: result || null,
+        status: "pending",
+        createdAt: serverTimestamp(),
+      });
+
+      setShowConfirmModal(false);
+      Alert.alert("Request Submitted", "Your service request was sent to the shop.");
+      router.push("/services");
+    } catch (error) {
+      console.error("Failed to submit service request:", error);
+      Alert.alert("Submission failed", "Your service request could not be submitted. Please try again.");
+    }
   };
 
   return (
@@ -260,7 +375,7 @@ export default function CustomerAIAssistant() {
         {/* Safety Notice */}
         <View style={styles.warningBanner}>
           <View style={styles.warningIcon}>
-            <Text style={styles.warningIconText}>!</Text>
+            <Text style={styles.warningIconText}>⚠</Text>
           </View>
 
           <View style={styles.warningContent}>
@@ -269,12 +384,12 @@ export default function CustomerAIAssistant() {
             </Text>
 
             <Text style={styles.warningText}>
-              ⚠ Recommendations are based on motorcycle
+              • Recommendations are based on motorcycle
               specifications and shop guidelines.
             </Text>
 
             <Text style={styles.warningText}>
-              ⚠ Consult a professional mechanic before
+              • Consult a professional mechanic before
               applying modifications or installing parts.
             </Text>
           </View>
@@ -497,10 +612,8 @@ export default function CustomerAIAssistant() {
                             styles.partDetails
                           }
                         >
-                          {part.category} • ₱
-                          {(
-                            part.price * 50
-                          ).toLocaleString()}
+                          {part.category || "Parts"} • ₱
+                          {(Number(part.price) || 0).toLocaleString()}
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -528,7 +641,7 @@ export default function CustomerAIAssistant() {
                 styles.analyzeButtonDisabled,
             ]}
             onPress={handleAnalyze}
-            disabled={loading}
+            disabled={loading || firebaseLoading}
             activeOpacity={0.85}
           >
             <Text style={styles.analyzeIcon}>
@@ -538,79 +651,109 @@ export default function CustomerAIAssistant() {
             <Text style={styles.analyzeButtonText}>
               {loading
                 ? "Analyzing..."
-                : "Analyze with AI"}
+                : firebaseLoading
+                  ? "Loading your data..."
+                  : "Analyze with AI"}
             </Text>
           </TouchableOpacity>
         </View>
 
+        {/* Recent AI Analysis History */}
+        {analysisHistory.length > 0 && (
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Recent AI Analysis</Text>
+            <Text style={styles.historyDescription}>Your latest saved analyses</Text>
+            {analysisHistory.map((entry) => (
+              <TouchableOpacity
+                key={entry.id}
+                style={styles.historyItem}
+                activeOpacity={0.8}
+                onPress={() => {
+                  if (entry.result) {
+                    setMode(entry.mode || entry.result.type || "recommendation");
+                    setFormData((previous) => ({
+                      ...previous,
+                      motorcycle: entry.motorcycle || previous.motorcycle,
+                      goal: entry.goal || "",
+                      parts: entry.notes || "",
+                    }));
+                    setResult(entry.result);
+                  }
+                }}
+              >
+                <View style={styles.historyItemTextWrap}>
+                  <Text style={styles.historyMotorcycle}>{entry.motorcycle || "Motorcycle analysis"}</Text>
+                  <Text style={styles.historyMeta}>
+                    {(entry.mode || "recommendation") === "evaluation" ? "Safety Evaluation" : `Recommendation${entry.goal ? ` • ${entry.goal}` : ""}`}
+                  </Text>
+                </View>
+                <Text style={styles.historyOpen}>View ›</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
         {/* Results */}
         {result && (
-          <View style={styles.card}>
+          <View style={styles.resultsCard}>
             <View style={styles.resultHeader}>
-              <View style={styles.resultIcon}>
-                <Text style={styles.resultIconText}>
-                  ✦
-                </Text>
-              </View>
-
-              <Text style={styles.sectionTitle}>
-                AI Analysis Results
-              </Text>
+              <Text style={styles.resultsTitle}>AI Analysis Results</Text>
             </View>
 
             {result.type === "recommendation" ? (
               <>
-                <Text style={styles.resultSubheading}>
-                  Recommended Parts:
-                </Text>
+                <View style={styles.resultsDivider} />
+                <Text style={styles.resultSubheading}>Recommended Parts</Text>
 
-                {result.suggestions.map(
-                  (suggestion, index) => (
-                    <View
-                      key={index}
-                      style={styles.resultItem}
-                    >
-                      <View
-                        style={
-                          styles.resultItemTop
-                        }
-                      >
-                        <Text
-                          style={
-                            styles.resultItemTitle
-                          }
-                        >
-                          {suggestion.name}
-                        </Text>
+                {(result.suggestions || []).map((suggestion, index) => {
+                  const inventoryPart = (visibleInventory || []).find((part) =>
+                    String(part.name || "").trim().toLowerCase() ===
+                    String(suggestion.name || "").trim().toLowerCase()
+                  );
+                  const hasInventoryPrice =
+                    inventoryPart &&
+                    inventoryPart.price !== undefined &&
+                    inventoryPart.price !== null &&
+                    inventoryPart.price !== "" &&
+                    Number.isFinite(Number(inventoryPart.price));
 
-                        <View
-                          style={
-                            styles.compatibilityBadge
-                          }
-                        >
-                          <Text
-                            style={
-                              styles.compatibilityText
-                            }
-                          >
-                            {
-                              suggestion.compatibility
-                            }
-                            % Compatible
-                          </Text>
+                  return (
+                    <View key={`${suggestion.name || "part"}-${index}`} style={styles.resultItem}>
+                      <View style={styles.resultPartRow}>
+                        {(() => {
+                          const inventoryImage = inventoryPart?.imageUrl || inventoryPart?.imageURL || inventoryPart?.image || inventoryPart?.photoURL || inventoryPart?.photoUrl;
+                          return inventoryImage ? (
+                            <Image source={{ uri: inventoryImage }} style={styles.resultPartImage} resizeMode="contain" />
+                          ) : (
+                            <View style={styles.resultPartImagePlaceholder}>
+                              <Text style={styles.resultPartImagePlaceholderText}>No image</Text>
+                            </View>
+                          );
+                        })()}
+                        <View style={styles.resultPartDetails}>
+                          <Text style={styles.resultItemTitle}>{suggestion.name}</Text>
+                          {hasInventoryPrice ? (
+                            <Text style={styles.inventoryPriceText}>
+                              Price: ₱{Number(inventoryPart.price).toLocaleString("en-PH", { maximumFractionDigits: 2 })}
+                            </Text>
+                          ) : (
+                            <Text style={styles.inventoryPriceText}>Price: Not available in inventory</Text>
+                          )}
                         </View>
                       </View>
-
-                      <Text
-                        style={
-                          styles.safetyText
-                        }
-                      >
-                        ✓ {suggestion.safetyNote}
+                      <Text style={styles.partExplanationLabel}>Why it's recommended:</Text>
+                      <Text style={styles.safetyText}>
+                        {suggestion.explanation || suggestion.reason || suggestion.safetyNote || "Review this recommendation with a qualified mechanic to confirm compatibility with your motorcycle."}
                       </Text>
                     </View>
-                  )
-                )}
+                  );
+                })}
+
+                <View style={styles.resultsDivider} />
+                <Text style={[styles.resultSubheading, styles.analysisResultHeading]}>Analysis Result</Text>
+                <Text style={styles.resultSummaryText}>
+                  {result.summary || (typeof result.compatibility === "string" ? result.compatibility : "The recommendations above are based on the details provided for your motorcycle.")}
+                </Text>
               </>
             ) : (
               <>
@@ -633,8 +776,9 @@ export default function CustomerAIAssistant() {
                     }
                   >
                     {result.status} -{" "}
-                    {result.compatibility}%
-                    Compatibility
+                    {typeof result.compatibility === "number"
+                      ? `${result.compatibility}% Compatibility`
+                      : result.compatibility}
                   </Text>
                 </View>
 
@@ -744,7 +888,7 @@ export default function CustomerAIAssistant() {
               showsVerticalScrollIndicator={false}
             >
               {motorcycles.map((motorcycle) => {
-                const value = `${motorcycle.brand} ${motorcycle.model} (${motorcycle.year})`;
+                const value = `${motorcycle.brand || ""} ${motorcycle.model || ""}${motorcycle.year ? ` (${motorcycle.year})` : ""}`.trim();
 
                 const selected =
                   formData.motorcycle === value;
@@ -777,8 +921,8 @@ export default function CustomerAIAssistant() {
                           styles.motorcyclePickerName
                         }
                       >
-                        {motorcycle.brand}{" "}
-                        {motorcycle.model}
+                        {motorcycle.brand || ""}{" "}
+                        {motorcycle.model || ""}
                       </Text>
 
                       <Text
@@ -786,7 +930,7 @@ export default function CustomerAIAssistant() {
                           styles.motorcyclePickerDetails
                         }
                       >
-                        {motorcycle.year} Model
+                        {motorcycle.year ? `${motorcycle.year} Model` : "Registered Motorcycle"}
                         {motorcycle.plate
                           ? ` • ${motorcycle.plate}`
                           : ""}
@@ -1006,7 +1150,7 @@ export default function CustomerAIAssistant() {
                     {selectedParts.map(
                       (partId) => {
                         const part =
-                          inventory.find(
+                          visibleInventory.find(
                             (item) =>
                               item.id ===
                               partId
@@ -1071,8 +1215,9 @@ export default function CustomerAIAssistant() {
                       }
                     >
                       {result.status} -{" "}
-                      {result.compatibility}%
-                      Compatibility
+                      {typeof result.compatibility === "number"
+                        ? `${result.compatibility}% Compatibility`
+                        : result.compatibility}
                     </Text>
                   </>
                 )}
@@ -1210,38 +1355,40 @@ export default function CustomerAIAssistant() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f9fafb",
+    backgroundColor: "#f3f5f9",
   },
 
   content: {
-    padding: 16,
-    paddingBottom: 40,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 36,
   },
 
   warningBanner: {
     flexDirection: "row",
-    backgroundColor: "#fffbeb",
-    borderWidth: 2,
-    borderColor: "#fbbf24",
-    borderRadius: 12,
-    padding: 16,
+    backgroundColor: "#fff8e7",
+    borderWidth: 1,
+    borderColor: "#f3d58a",
+    borderRadius: 16,
+    padding: 15,
     marginBottom: 14,
   },
 
   warningIcon: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: "#f59e0b",
+    width: 26,
+    height: 26,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
+    marginTop: 2,
   },
 
   warningIconText: {
-    color: "#ffffff",
-    fontSize: 16,
-    fontWeight: "800",
+    color: "#c77700",
+    fontSize: 23,
+    fontWeight: "700",
+    lineHeight: 26,
+    textAlign: "center",
   },
 
   warningContent: {
@@ -1264,31 +1411,38 @@ const styles = StyleSheet.create({
 
   card: {
     backgroundColor: "#ffffff",
-    borderRadius: 14,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
-    padding: 16,
-    marginBottom: 14,
+    borderColor: "#e7eaf0",
+    padding: 17,
+    marginBottom: 15,
+    shadowColor: "#172033",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.045,
+    shadowRadius: 12,
+    elevation: 2,
   },
 
   sectionTitle: {
     color: "#111827",
-    fontSize: 16,
-    fontWeight: "700",
+    fontSize: 17,
+    fontWeight: "800",
+    letterSpacing: -0.35,
     marginBottom: 14,
   },
 
   modeCard: {
-    borderWidth: 2,
-    borderColor: "#e5e7eb",
-    borderRadius: 12,
-    padding: 15,
+    borderWidth: 1.5,
+    borderColor: "#e4e8ef",
+    backgroundColor: "#ffffff",
+    borderRadius: 14,
+    padding: 14,
     marginBottom: 10,
   },
 
   modeCardActive: {
-    borderColor: "#1f2937",
-    backgroundColor: "#f9fafb",
+    borderColor: "#2563eb",
+    backgroundColor: "#eff6ff",
   },
 
   modeHeader: {
@@ -1298,25 +1452,25 @@ const styles = StyleSheet.create({
   },
 
   modeIcon: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
-    backgroundColor: "#f3f4f6",
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: "#e8eefc",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: 11,
   },
 
   modeIconText: {
-    color: "#374151",
-    fontSize: 17,
-    fontWeight: "700",
+    color: "#2456c7",
+    fontSize: 18,
+    fontWeight: "800",
   },
 
   modeTitle: {
     color: "#111827",
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "700",
   },
 
   modeDescription: {
@@ -1328,17 +1482,18 @@ const styles = StyleSheet.create({
   label: {
     color: "#374151",
     fontSize: 12,
-    fontWeight: "600",
-    marginBottom: 7,
-    marginTop: 8,
+    fontWeight: "700",
+    marginBottom: 8,
+    marginTop: 11,
   },
 
   selectBox: {
-    minHeight: 48,
+    minHeight: 51,
     borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 10,
-    paddingHorizontal: 13,
+    borderColor: "#d9dee8",
+    backgroundColor: "#fbfcfe",
+    borderRadius: 12,
+    paddingHorizontal: 14,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -1369,15 +1524,16 @@ const styles = StyleSheet.create({
 
   goalButton: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 9,
-    paddingHorizontal: 13,
-    paddingVertical: 9,
+    borderColor: "#d9dee8",
+    backgroundColor: "#ffffff",
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
 
   goalButtonActive: {
-    backgroundColor: "#111827",
-    borderColor: "#111827",
+    backgroundColor: "#2563eb",
+    borderColor: "#2563eb",
   },
 
   goalText: {
@@ -1391,28 +1547,32 @@ const styles = StyleSheet.create({
   },
 
   textArea: {
-    minHeight: 92,
+    minHeight: 100,
     borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 10,
-    padding: 12,
+    borderColor: "#d9dee8",
+    backgroundColor: "#fbfcfe",
+    borderRadius: 12,
+    padding: 13,
     color: "#111827",
     fontSize: 13,
+    lineHeight: 19,
   },
 
   partsBox: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 10,
+    borderColor: "#e0e5ed",
+    borderRadius: 13,
     overflow: "hidden",
+    backgroundColor: "#ffffff",
   },
 
   partItem: {
     flexDirection: "row",
     alignItems: "flex-start",
-    padding: 11,
+    paddingVertical: 13,
+    paddingHorizontal: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#f3f4f6",
+    borderBottomColor: "#edf0f5",
   },
 
   checkbox: {
@@ -1428,8 +1588,8 @@ const styles = StyleSheet.create({
   },
 
   checkboxSelected: {
-    backgroundColor: "#111827",
-    borderColor: "#111827",
+    backgroundColor: "#2563eb",
+    borderColor: "#2563eb",
   },
 
   checkboxCheck: {
@@ -1461,17 +1621,24 @@ const styles = StyleSheet.create({
   },
 
   analyzeButton: {
-    minHeight: 48,
-    backgroundColor: "#1f2937",
-    borderRadius: 10,
+    minHeight: 52,
+    backgroundColor: "#1d4ed8",
+    borderRadius: 13,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 18,
+    marginTop: 20,
+    shadowColor: "#1d4ed8",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 7,
+    elevation: 3,
   },
 
   analyzeButtonDisabled: {
     backgroundColor: "#9ca3af",
+    shadowOpacity: 0,
+    elevation: 0,
   },
 
   analyzeIcon: {
@@ -1486,6 +1653,51 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
+  resultsCard: {
+    backgroundColor: "#000000",
+    borderRadius: 0,
+    borderWidth: 0,
+    padding: 14,
+    marginBottom: 15,
+  },
+  resultsTitle: {
+    color: "#ffffff",
+    fontSize: 17,
+    fontWeight: "800",
+    marginBottom: 10,
+  },
+  resultsDivider: {
+    height: 1,
+    backgroundColor: "#2d2d2d",
+    marginBottom: 25,
+  },
+  resultPartRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  resultPartImage: {
+    width: 68,
+    height: 68,
+    borderRadius: 10,
+    backgroundColor: "#ffffff",
+  },
+  resultPartImagePlaceholder: {
+    width: 68,
+    height: 68,
+    borderRadius: 10,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  resultPartImagePlaceholderText: {
+    color: "#666666",
+    fontSize: 9,
+  },
+  resultPartDetails: {
+    flex: 1,
+  },
+
   resultHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -1493,13 +1705,13 @@ const styles = StyleSheet.create({
   },
 
   resultIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 9,
-    backgroundColor: "#f3f4f6",
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: "#e8eefc",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: 11,
   },
 
   resultIconText: {
@@ -1508,7 +1720,7 @@ const styles = StyleSheet.create({
   },
 
   resultSubheading: {
-    color: "#111827",
+    color: "#ffffff",
     fontSize: 13,
     fontWeight: "600",
     marginBottom: 9,
@@ -1516,10 +1728,11 @@ const styles = StyleSheet.create({
 
   resultItem: {
     borderWidth: 1,
-    borderColor: "#e5e7eb",
-    borderRadius: 10,
-    padding: 13,
-    marginBottom: 9,
+    borderColor: "#303030",
+    backgroundColor: "#050505",
+    borderRadius: 8,
+    padding: 11,
+    marginBottom: 14,
   },
 
   resultItemTop: {
@@ -1531,7 +1744,7 @@ const styles = StyleSheet.create({
 
   resultItemTitle: {
     flex: 1,
-    color: "#111827",
+    color: "#ffffff",
     fontSize: 13,
     fontWeight: "600",
   },
@@ -1550,7 +1763,7 @@ const styles = StyleSheet.create({
   },
 
   safetyText: {
-    color: "#6b7280",
+    color: "#e5e5e5",
     fontSize: 11,
     lineHeight: 17,
     marginTop: 8,
@@ -1559,9 +1772,11 @@ const styles = StyleSheet.create({
   evaluationBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#f9fafb",
-    borderRadius: 10,
-    padding: 13,
+    backgroundColor: "#eff6ff",
+    borderWidth: 1,
+    borderColor: "#dbeafe",
+    borderRadius: 13,
+    padding: 14,
     marginBottom: 16,
   },
 
@@ -1613,10 +1828,11 @@ const styles = StyleSheet.create({
   },
 
   secondaryButton: {
-    minHeight: 46,
+    minHeight: 48,
     borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 10,
+    borderColor: "#d7deea",
+    backgroundColor: "#ffffff",
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
@@ -1635,9 +1851,9 @@ const styles = StyleSheet.create({
   },
 
   primaryButton: {
-    minHeight: 46,
-    backgroundColor: "#1f2937",
-    borderRadius: 10,
+    minHeight: 48,
+    backgroundColor: "#1d4ed8",
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1657,15 +1873,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderWidth: 1,
-    borderColor: "#e5e7eb",
-    borderRadius: 10,
-    padding: 13,
-    marginBottom: 8,
+    borderColor: "#e3e8f0",
+    backgroundColor: "#ffffff",
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 9,
   },
 
   motorcyclePickerItemSelected: {
-    borderColor: "#111827",
-    backgroundColor: "#f9fafb",
+    borderColor: "#2563eb",
+    backgroundColor: "#eff6ff",
   },
 
   motorcyclePickerInfo: {
@@ -1700,8 +1917,8 @@ const styles = StyleSheet.create({
 
   modalCard: {
     backgroundColor: "#ffffff",
-    borderRadius: 16,
-    padding: 18,
+    borderRadius: 20,
+    padding: 20,
     maxHeight: "90%",
   },
 
@@ -1734,11 +1951,12 @@ const styles = StyleSheet.create({
   },
 
   input: {
-    height: 46,
+    height: 48,
     borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 10,
-    paddingHorizontal: 12,
+    borderColor: "#d9dee8",
+    backgroundColor: "#fbfcfe",
+    borderRadius: 12,
+    paddingHorizontal: 13,
     color: "#111827",
     fontSize: 13,
   },
@@ -1868,4 +2086,61 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
   },
+
+  inventoryPriceText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 6,
+  },
+  partExplanationLabel: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 10,
+    marginBottom: 2,
+  },
+  analysisResultHeading: {
+    marginTop: 8,
+  },
+  resultSummaryText: {
+    color: "#f0f0f0",
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 10,
+  },
+  historyDescription: {
+    color: "#6b7280",
+    fontSize: 12,
+    marginTop: -6,
+    marginBottom: 10,
+  },
+  historyItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#e5e7eb",
+    gap: 12,
+  },
+  historyItemTextWrap: {
+    flex: 1,
+  },
+  historyMotorcycle: {
+    color: "#111827",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  historyMeta: {
+    color: "#6b7280",
+    fontSize: 12,
+    marginTop: 3,
+  },
+  historyOpen: {
+    color: "#2563eb",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
 });

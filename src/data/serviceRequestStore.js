@@ -143,6 +143,20 @@ export async function addServiceRequest(request) {
     requestData
   );
 
+  // Notify the admin only after the service request is saved successfully.
+  await addDoc(collection(db, "notifications"), {
+    recipientRole: "admin",
+    type: "service",
+    title: "New Service Request",
+    message: `${requestData.motorcycle || "A customer motorcycle"} — ${requestData.serviceType || "Service request"}`,
+    route: "/admin/services",
+    relatedId: documentRef.id,
+    customerId: user.uid,
+    customerName: request.customerName || user.displayName || user.email || "Customer",
+    read: false,
+    createdAt: serverTimestamp(),
+  });
+
   const newRequest = {
     id: documentRef.id,
     ...requestData,
